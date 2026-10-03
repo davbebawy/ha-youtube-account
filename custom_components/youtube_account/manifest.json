@@ -1,0 +1,28 @@
+{
+  "domain": "youtube_account",
+  "name": "YouTube Account",
+  "after_dependencies": [
+    "frontend",
+    "http",
+    "media_source"
+  ],
+  "codeowners": [
+    "@davbebawy"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "media_player"
+  ],
+  "documentation": "https://github.com/davbebawy/ha-youtube-account",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/davbebawy/ha-youtube-account/issues",
+  "loggers": [
+    "yt_dlp"
+  ],
+  "requirements": [
+    "yt-dlp>=2026.7.4"
+  ],
+  "single_config_entry": true,
+  "version": "1.0.0"
+}

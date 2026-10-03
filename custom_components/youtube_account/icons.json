@@ -1,0 +1,42 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "signed_in": {
+        "default": "mdi:account-off",
+        "state": {
+          "on": "mdi:account-check"
+        }
+      }
+    },
+    "button": {
+      "refresh_feed": {
+        "default": "mdi:refresh"
+      }
+    },
+    "sensor": {
+      "home_feed": {
+        "default": "mdi:youtube"
+      },
+      "watch_later": {
+        "default": "mdi:clock-outline"
+      }
+    }
+  },
+  "services": {
+    "play": {
+      "service": "mdi:play-circle"
+    },
+    "refresh_feed": {
+      "service": "mdi:refresh"
+    },
+    "mark_watched": {
+      "service": "mdi:eye-check"
+    },
+    "add_to_watch_later": {
+      "service": "mdi:playlist-plus"
+    },
+    "remove_from_watch_later": {
+      "service": "mdi:playlist-remove"
+    }
+  }
+}

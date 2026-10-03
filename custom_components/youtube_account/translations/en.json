@@ -1,0 +1,175 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sign in to YouTube",
+        "description": "Home Assistant reads your home feed and Watch Later with your YouTube sign-in cookies. Do this on a computer, in Brave or Chrome:\n\n1. Open a private window and sign in to youtube.com.\n2. Open the developer tools (Cmd+Option+I or F12), tab **Network**. Tick **Disable cache**.\n3. Reload the page. Type `browse` in the filter box.\n4. Click a `browse?prettyPrint=false` row. Under **Request Headers**, right-click `cookie` and choose **Copy value**.\n5. Paste it below and select **Submit**.\n6. Close the private window. Do not sign out: signing out ends the session you just copied.\n\nA whole cookies.txt export works too, pasted or as a file on the Home Assistant host. The value is stored in Home Assistant only and is not shown again.",
+        "data": {
+          "cookies": "Cookie value",
+          "cookies_file": "Cookies file on the Home Assistant host"
+        },
+        "data_description": {
+          "cookies": "The cookie request header from youtube.com, or a cookies.txt file.",
+          "cookies_file": "Instead of pasting: the path of a cookies.txt the Home Assistant host can read, such as /config/youtube_cookies.txt. It is read once; delete it afterwards."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "unknown": "Unexpected error",
+      "no_cookies": "Paste the cookie value, or give the path of a cookies file.",
+      "file_unreadable": "Home Assistant can't read a cookies file at this path.",
+      "invalid_cookies": "This is not a signed-in youtube.com cookie value. Copy it from a youtube.com request while signed in (step 4).",
+      "signed_out": "YouTube does not accept this sign-in. Sign in again in a new private window and copy a fresh value."
+    },
+    "abort": {
+      "already_configured": "The YouTube account is already configured",
+      "single_instance_allowed": "The YouTube account is already configured",
+      "reauth_successful": "Re-authentication was successful",
+      "reconfigure_successful": "The YouTube sign-in was updated"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "YouTube account",
+        "data": {
+          "min_refresh_minutes": "Minimum time between feed reads"
+        },
+        "data_description": {
+          "min_refresh_minutes": "Home Assistant starting, or opening the feed card or the media browser, reads the feed and Watch Later again only when the last read is older than this. The last read is kept on disk in between. The Refresh button always reads. 0 reads every time. Up to 10080 (7 days)."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_video": {
+      "message": "\"{media_id}\" is not a YouTube video id or URL."
+    },
+    "signed_out": {
+      "message": "YouTube no longer accepts the account's sign-in. Sign in again from the YouTube account's Reconfigure menu."
+    },
+    "feed_failed": {
+      "message": "Failed to read the YouTube home feed: {error}"
+    },
+    "list_failed": {
+      "message": "Failed to read the videos of {list_id}: {error}"
+    },
+    "no_account": {
+      "message": "No YouTube account is set up. Add one: Add integration > YouTube Account."
+    },
+    "not_a_tv": {
+      "message": "{entity_id} is not a YouTube on TV media player."
+    },
+    "mark_watched_failed": {
+      "message": "Failed to mark {video_id} watched: {error}"
+    },
+    "watch_later_unread": {
+      "message": "Watch Later has not been read yet. Refresh the feed first."
+    },
+    "watch_later_failed": {
+      "message": "Failed to change Watch Later: {error}"
+    }
+  },
+  "device": {
+    "account": {
+      "name": "YouTube account"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "signed_in": {
+        "name": "Signed in"
+      }
+    },
+    "button": {
+      "refresh_feed": {
+        "name": "Refresh home feed"
+      }
+    },
+    "sensor": {
+      "home_feed": {
+        "name": "Home feed",
+        "unit_of_measurement": "items"
+      },
+      "watch_later": {
+        "name": "Watch Later",
+        "unit_of_measurement": "videos"
+      }
+    }
+  },
+  "selector": {
+    "enqueue": {
+      "options": {
+        "play": "Play now",
+        "next": "Play next",
+        "add": "Add to the queue",
+        "replace": "Replace the queue"
+      }
+    }
+  },
+  "services": {
+    "play": {
+      "name": "Play on a TV",
+      "description": "Plays a YouTube video, Mix or playlist on a YouTube on TV player. A Mix sends its first 25 videos and a playlist its first 50, read with the account when it is set up (so Watch Later and Liked videos work); the TV keeps a Mix going.",
+      "fields": {
+        "entity_id": {
+          "name": "TV",
+          "description": "The YouTube on TV media player."
+        },
+        "media": {
+          "name": "Media",
+          "description": "A video, Mix or playlist id or link (RD..., PL..., WL, LL)."
+        },
+        "enqueue": {
+          "name": "Enqueue",
+          "description": "Play now (default), play next, add to the queue, or replace the queue."
+        }
+      }
+    },
+    "refresh_feed": {
+      "name": "Refresh home feed",
+      "description": "Reads the YouTube home feed and Watch Later again.",
+      "fields": {
+        "max_age": {
+          "name": "Maximum age",
+          "description": "Only read if the last read is older than this many seconds (raised to the minimum time between reads). Default: always."
+        }
+      }
+    },
+    "mark_watched": {
+      "name": "Mark watched",
+      "description": "Marks a video fully watched on the YouTube account, so YouTube stops recommending it, and drops it from the home feed.",
+      "fields": {
+        "video": {
+          "name": "Video",
+          "description": "A YouTube video id or link."
+        }
+      }
+    },
+    "add_to_watch_later": {
+      "name": "Save to Watch Later",
+      "description": "Saves a video to Watch Later on the YouTube account. A video already there stays where it is.",
+      "fields": {
+        "video": {
+          "name": "Video",
+          "description": "A YouTube video id or link."
+        }
+      }
+    },
+    "remove_from_watch_later": {
+      "name": "Remove from Watch Later",
+      "description": "Removes videos from Watch Later on the YouTube account: the videos named, or every video watched at least the given percent.",
+      "fields": {
+        "videos": {
+          "name": "Videos",
+          "description": "YouTube video ids or links."
+        },
+        "min_percent": {
+          "name": "Watched at least",
+          "description": "Removes every video in the last read Watch Later list watched this far or more."
+        }
+      }
+    }
+  }
+}

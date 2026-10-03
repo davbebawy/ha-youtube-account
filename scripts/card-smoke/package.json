@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node smoke.mjs" },
+  "devDependencies": { "happy-dom": "^20.0.0" }
+}

@@ -1,0 +1,58 @@
+play:
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          integration: youtube_on_tv
+          domain: media_player
+    media:
+      required: true
+      example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      selector:
+        text:
+    enqueue:
+      selector:
+        select:
+          options:
+            - play
+            - next
+            - add
+            - replace
+          translation_key: enqueue
+refresh_feed:
+  fields:
+    max_age:
+      selector:
+        number:
+          min: 0
+          max: 86400
+          unit_of_measurement: s
+mark_watched:
+  fields:
+    video:
+      required: true
+      example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      selector:
+        text:
+add_to_watch_later:
+  fields:
+    video:
+      required: true
+      example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      selector:
+        text:
+remove_from_watch_later:
+  fields:
+    videos:
+      example: "dQw4w9WgXcQ"
+      selector:
+        text:
+          multiple: true
+    min_percent:
+      example: 90
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"

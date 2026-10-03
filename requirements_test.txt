@@ -1,0 +1,3 @@
+pytest-homeassistant-custom-component==0.13.366
+ruff==0.16.8
+yt-dlp==2026.07.04
