@@ -28,6 +28,7 @@ refresh_feed:
           min: 0
           max: 86400
           unit_of_measurement: s
+load_more:
 mark_watched:
   fields:
     video:

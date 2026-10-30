@@ -24,6 +24,8 @@ DEFAULT_MIN_REFRESH: Final = 15
 
 # Items read from the home feed; YouTube's first page holds about 30.
 FEED_LIMIT: Final = 30
+# Home feed items kept at most; "More videos" stops here.
+FEED_MAX: Final = 300
 # Videos taken from a Mix (endless) or a playlist when it's played.
 MIX_LIMIT: Final = 25
 PLAYLIST_LIMIT: Final = 50

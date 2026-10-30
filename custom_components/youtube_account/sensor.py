@@ -56,6 +56,8 @@ class YouTubeHomeFeedSensor(YouTubeAccountEntity, SensorEntity):
             "items": [item.as_dict() for item in data.items],
             "updated_at": data.updated_at.isoformat() if data.updated_at else None,
             "shorts_hidden": data.shorts_hidden,
+            # The feed has another page: the card shows "More videos".
+            "more": data.more is not None,
             # The Configure option, so the feed card can say how often it reads.
             "min_refresh_minutes": round(
                 self.coordinator.min_refresh.total_seconds() / 60

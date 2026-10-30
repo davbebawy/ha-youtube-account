@@ -29,6 +29,9 @@
     "refresh_feed": {
       "service": "mdi:refresh"
     },
+    "load_more": {
+      "service": "mdi:playlist-plus"
+    },
     "mark_watched": {
       "service": "mdi:eye-check"
     },

@@ -51,8 +51,11 @@ assert.equal([...r.querySelectorAll("button, a")].filter((e) => !e.title && !e.d
 click(r.querySelector('.thumb[data-id="v1"]'));
 assert.equal(r.querySelector(".thumb img"), img, "pick rebuilt the list");
 click(r.querySelector('[data-act="save"]'));
+// Saved: off home at once, before Watch Later is read again.
+assert.equal(r.querySelector('.thumb[data-id="v1"]'), null, "saved video still on home");
 await settle();
 assert.deepEqual(calls.at(-1), ["youtube_account", "add_to_watch_later", { video: "v1" }]);
+assert.equal(r.querySelector(".chip[data-filter=later]").textContent, "Watch Later 3");
 
 click(r.querySelector('[data-filter="later"]'));
 assert.equal(r.querySelectorAll(".item").length, 3);
@@ -75,11 +78,11 @@ card.hass = two("idle", "playing");
 assert.equal(card._targetPlayer().entity, Q, "playing player is not the target");
 click(r.querySelector(`.seg[data-player="${P}"]`));
 assert.equal(card._targetPlayer().entity, P, "pick in Now playing ignored");
-card._pick("v1");
+card._pick("RDx");
 click(r.querySelector('[data-act="play"]'));
 await settle();
 // Play goes through the account, which expands lists and calls play_media.
-assert.deepEqual(calls.at(-1), ["youtube_account", "play", { entity_id: P, media: "v1", enqueue: "play" }]);
+assert.deepEqual(calls.at(-1), ["youtube_account", "play", { entity_id: P, media: "RDx", enqueue: "play" }]);
 // The last watched sensor is found on the TV side.
 card._hass = { ...two("idle", "idle"), entities: { [P]: { platform: "youtube_on_tv" },
   "sensor.youtube_on_tv_last_watched": { platform: "youtube_on_tv", translation_key: "last_session" } } };
@@ -124,5 +127,67 @@ assert.match(r.querySelector(".head .sub").textContent, /120 min/);
 click(r.querySelector('[data-act="settings"]'));
 assert.equal(r.querySelector(".settings input").value, "120", "box shows the old value after a save");
 click(r.querySelector('[data-act="settings-cancel"]'));
+
+// Queue, hide on add, More videos: a fresh card with a queue list and a failing call.
+const Qd = "todo.youtube_on_tv_queue";
+const subs = [];
+let fail = false;
+const qcalls = [];
+const qhass = (lu = "7") => ({
+  callService: async (...a) => { qcalls.push(a); if (fail) throw new Error("TV is off"); },
+  connection: { subscribeMessage: async (cb, msg) => { subs.push({ cb, msg }); return () => { subs.find((x) => x.cb === cb).off = true; }; } },
+  entities: { [P]: { platform: "youtube_on_tv", device_id: "d1" }, [Qd]: { platform: "youtube_on_tv", device_id: "d1" } },
+  states: {
+    "sensor.youtube_account_home_feed": st("3", { updated_at: new Date().toISOString(), more: true, items: [
+      { kind: "video", id: "v1", title: "One", url: "u" },
+      { kind: "video", id: "v2", title: "Two", url: "u" },
+      { kind: "video", id: "a", title: "In Watch Later", url: "u" } ] }, lu),
+    "sensor.youtube_account_watch_later": st("1", { items: [{ id: "a", title: "A", percent: 0, url: "u" }] }, lu),
+    [P]: st("playing", { media_content_id: "v9", media_title: "Nine", media_position: 1, media_duration: 60, media_position_updated_at: new Date().toISOString() }, lu),
+    [Qd]: st("2", {}, lu),
+  },
+});
+const c2 = document.createElement("youtube-feed-card");
+Object.defineProperty(c2, "clientWidth", { get: () => 900 });
+c2.setConfig({});
+document.body.appendChild(c2);
+c2.hass = qhass();
+const r2 = c2.shadowRoot;
+const ids = () => [...r2.querySelectorAll(".feed .thumb")].map((t) => t.dataset.id);
+assert.deepEqual(ids(), ["v1", "v2"], "a Watch Later video shows on home");
+await settle();
+assert.deepEqual(subs[0]?.msg, { type: "todo/item/subscribe", entity_id: Qd }, "queue list not followed");
+subs[0].cb({ items: [
+  { uid: "v8", summary: "Eight", description: "Chan", status: "completed" },
+  { uid: "v9", summary: "Nine", description: "Now playing - Chan", status: "needs_action" },
+  { uid: "v2", summary: "Two", description: "Chan2", status: "needs_action" } ] });
+assert.deepEqual(ids(), ["v1"], "a queued video shows on home");
+assert.match(r2.querySelector(".live-queue").textContent, /Queue on .* 1 up next/);
+assert.equal(r2.querySelectorAll(".q-row").length, 2, "played video shown in the queue");
+assert.equal(r2.querySelectorAll(".q-row [data-act=unqueue]").length, 1, "Remove on the playing video");
+click(r2.querySelector(".q-row [data-act=unqueue]"));
+await settle();
+assert.deepEqual(qcalls.at(-1), ["todo", "remove_item", { entity_id: Qd, item: "v2" }]);
+// Add to queue that fails: the tile leaves at once and comes back.
+fail = true;
+c2._pick("v1");
+click(r2.querySelector('[data-act="add"]'));
+assert.deepEqual(ids(), [], "queued tile still on home");
+await settle();
+assert.deepEqual(ids(), ["v1"], "tile not back after a failed add");
+fail = false;
+c2._pick("v1");
+click(r2.querySelector('[data-act="add"]'));
+await settle();
+assert.deepEqual(qcalls.at(-1), ["youtube_account", "play", { entity_id: P, media: "v1", enqueue: "add" }]);
+assert.deepEqual(ids(), [], "queued tile back on home");
+click(r2.querySelector('[data-act="more"]'));
+await settle();
+assert.deepEqual(qcalls.at(-1), ["youtube_account", "load_more", {}]);
+c2.hass = { ...qhass("8"), states: { ...qhass("8").states, "sensor.youtube_account_home_feed": st("3", { updated_at: new Date().toISOString(), more: false, items: [] }, "8") } };
+assert.equal(r2.querySelector('[data-act="more"]'), null, "More shown at the end of the feed");
+c2.remove();
+await settle();
+assert.ok(subs[0].off, "queue subscription left open");
 console.log("card smoke: ok");
 process.exit(0);

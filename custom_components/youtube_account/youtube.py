@@ -186,30 +186,51 @@ def fetch_feed(cookies: str, limit: int) -> tuple[list[FeedItem], str, int]:
     left out. Ads are left out too. Raises SignedOut when the account is no
     longer signed in.
     """
+    items, refreshed, shorts, _ = fetch_feed_page(cookies, limit)
+    return items[:limit], refreshed, shorts
+
+
+def fetch_feed_page(
+    cookies: str, limit: int, token: str | None = None
+) -> tuple[list[FeedItem], str, int, str | None]:
+    """Read the home feed from its start, or from token for more tiles.
+
+    Reads pages until it has limit items or none are left, and keeps every
+    item of the last page read. Returns the items, the cookies as YouTube
+    left them, the Shorts left out, and the token of the next page (None at
+    the end of the feed). The home page is read either way: its ytcfg signs
+    the continuation call.
+    """
     with _cookie_file(cookies) as path:
         with _Web(path) as web:
             html = web.get(HOME_URL)
             cfg = _ytcfg(html)
             if not cfg.get("LOGGED_IN"):
                 raise SignedOut
-            data = _json_after(html, "var ytInitialData =")
-            if data is None:
-                raise YouTubeError("home page has no data")
             items: list[FeedItem] = []
             tokens: list[str] = []
-            shorts = _collect_feed(data, items, tokens)
-            for _ in range(_FEED_PAGES - 1):
+            shorts = 0
+            if token is None:
+                data = _json_after(html, "var ytInitialData =")
+                if data is None:
+                    raise YouTubeError("home page has no data")
+                shorts = _collect_feed(data, items, tokens)
+                pages = _FEED_PAGES - 1
+            else:
+                tokens.append(token)
+                pages = _FEED_PAGES
+            for _ in range(pages):
                 if len(items) >= limit or not tokens:
                     break
-                token = tokens.pop(0)
+                next_token = tokens.pop(0)
                 tokens.clear()
-                page = web.post(cfg, "browse", {"continuation": token})
+                page = web.post(cfg, "browse", {"continuation": next_token})
                 shorts += _collect_feed(page, items, tokens)
         with open(path, encoding="utf-8") as file:
             refreshed = file.read()
     seen: set[str] = set()
     unique = [i for i in items if not (i.id in seen or seen.add(i.id))]
-    return unique[:limit], refreshed, shorts
+    return unique, refreshed, shorts, tokens[0] if tokens else None
 
 
 def expand_list(

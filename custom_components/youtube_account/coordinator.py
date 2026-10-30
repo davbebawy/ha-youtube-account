@@ -27,6 +27,7 @@ from .const import (
     DEFAULT_MIN_REFRESH,
     DOMAIN,
     FEED_LIMIT,
+    FEED_MAX,
     LOGGER,
 )
 from .youtube import FeedItem, WatchLaterItem
@@ -62,6 +63,8 @@ class FeedState:
     shorts_hidden: int = 0
     # None until Watch Later was read once; a failed read keeps the last list.
     watch_later: tuple[WatchLaterItem, ...] | None = None
+    # The token of the feed's next page; None at its end or past FEED_MAX.
+    more: str | None = None
 
 
 class YouTubeAccountCoordinator(DataUpdateCoordinator[FeedState]):
@@ -103,6 +106,7 @@ class YouTubeAccountCoordinator(DataUpdateCoordinator[FeedState]):
                 watch_later=None
                 if stored.get("watch_later") is None
                 else tuple(WatchLaterItem(**i) for i in stored["watch_later"]),
+                more=stored.get("more"),
             )
         except KeyError, TypeError, ValueError:
             # Written by another version: read YouTube instead.
@@ -126,6 +130,7 @@ class YouTubeAccountCoordinator(DataUpdateCoordinator[FeedState]):
             "watch_later": None
             if data.watch_later is None
             else [asdict(i) for i in data.watch_later],
+            "more": data.more,
         }
 
     @callback
@@ -146,8 +151,8 @@ class YouTubeAccountCoordinator(DataUpdateCoordinator[FeedState]):
 
     async def _async_update_data(self) -> FeedState:
         try:
-            items, refreshed, shorts = await self.hass.async_add_executor_job(
-                youtube.fetch_feed, self.cookies, FEED_LIMIT
+            items, refreshed, shorts, more = await self.hass.async_add_executor_job(
+                youtube.fetch_feed_page, self.cookies, FEED_LIMIT
             )
         except youtube.SignedOut as err:
             self._set_signed_in(False)
@@ -170,7 +175,43 @@ class YouTubeAccountCoordinator(DataUpdateCoordinator[FeedState]):
             LOGGER.warning("Error reading Watch Later: %s", err)
         self._set_signed_in(True)
         self._store_cookies(refreshed)
-        return FeedState(self._unwatched(items), dt_util.utcnow(), shorts, watch_later)
+        return FeedState(
+            self._unwatched(items), dt_util.utcnow(), shorts, watch_later, more
+        )
+
+    async def async_load_more(self) -> None:
+        """Add the feed's next page to the items; nothing at the end of the feed."""
+        if self.data is None or self.data.more is None:
+            return
+        try:
+            items, refreshed, shorts, more = await self.hass.async_add_executor_job(
+                youtube.fetch_feed_page, self.cookies, FEED_LIMIT, self.data.more
+            )
+        except youtube.SignedOut as err:
+            self._set_signed_in(False)
+            self.config_entry.async_start_reauth(self.hass)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="signed_out"
+            ) from err
+        except youtube.YouTubeError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="feed_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        self._set_signed_in(True)
+        self._store_cookies(refreshed)
+        known = {item.id for item in self.data.items}
+        added = [item for item in items if item.id not in known]
+        merged = (*self.data.items, *self._unwatched(added))[:FEED_MAX]
+        self.async_set_updated_data(
+            replace(
+                self.data,
+                items=merged,
+                shorts_hidden=self.data.shorts_hidden + shorts,
+                more=more if len(merged) < FEED_MAX else None,
+            )
+        )
 
     @callback
     def _store_cookies(self, refreshed: str) -> None:

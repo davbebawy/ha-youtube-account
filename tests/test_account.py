@@ -129,7 +129,7 @@ async def test_reconfigure_account(
 ) -> None:
     result = await init_account.start_reconfigure_flow(hass)
     assert result["step_id"] == "user"
-    mock_fetch.return_value = (list(FEED), COOKIES + "# new\n", 0)
+    mock_fetch.return_value = (list(FEED), COOKIES + "# new\n", 0, None)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_COOKIES: HEADER}
     )
@@ -175,6 +175,45 @@ async def test_feed_entities(
     await hass.async_block_till_done()
     assert mock_fetch.call_count == 2
     assert mock_fetch.call_args.args == (REFRESHED, 30)
+
+
+async def test_load_more(
+    hass: HomeAssistant, init_account: MockConfigEntry, mock_fetch: MagicMock
+) -> None:
+    assert hass.states.get(FEED_ID).attributes["more"] is False
+    mock_fetch.return_value = (list(FEED), REFRESHED, 1, "t1")
+    await hass.services.async_call(DOMAIN, "refresh_feed", {}, blocking=True)
+    assert hass.states.get(FEED_ID).attributes["more"] is True
+
+    new = youtube.FeedItem("video", "R6MlUcmOul8", "New", "Chan")
+    mock_fetch.return_value = ([FEED[0], new], REFRESHED, 2, None)
+    await hass.services.async_call(DOMAIN, "load_more", {}, blocking=True)
+    assert mock_fetch.call_args.args == (REFRESHED, 30, "t1")
+    state = hass.states.get(FEED_ID)
+    # Added at the end, an item already listed is not repeated.
+    assert [i["id"] for i in state.attributes["items"]] == [
+        "OmmaHKzxtVw",
+        "RDqyUPz6_TciY",
+        "R6MlUcmOul8",
+    ]
+    assert state.attributes["shorts_hidden"] == 3
+    assert state.attributes["more"] is False
+
+    # At the end of the feed there is nothing to read.
+    calls = mock_fetch.call_count
+    await hass.services.async_call(DOMAIN, "load_more", {}, blocking=True)
+    assert mock_fetch.call_count == calls
+
+
+async def test_load_more_signed_out(
+    hass: HomeAssistant, init_account: MockConfigEntry, mock_fetch: MagicMock
+) -> None:
+    mock_fetch.return_value = (list(FEED), REFRESHED, 1, "t1")
+    await hass.services.async_call(DOMAIN, "refresh_feed", {}, blocking=True)
+    mock_fetch.side_effect = youtube.SignedOut
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(DOMAIN, "load_more", {}, blocking=True)
+    assert hass.states.get(SIGNED_IN_ID).state == "off"
 
 
 async def test_refresh_feed_max_age(

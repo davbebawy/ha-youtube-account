@@ -28,7 +28,7 @@ The **YouTube account** device has:
 
 | Entity | Description |
 |---|---|
-| `sensor.youtube_account_home_feed` | Number of feed items; `items` attribute with each video, Mix or playlist (id, title, channel, duration, thumbnail, url, `details`: views and age, such as 1.5M views and 1d ago, `percent` watched). `updated_at`, `shorts_hidden`, `min_refresh_minutes` |
+| `sensor.youtube_account_home_feed` | Number of feed items; `items` attribute with each video, Mix or playlist (id, title, channel, duration, thumbnail, url, `details`: views and age, such as 1.5M views and 1d ago, `percent` watched). `updated_at`, `shorts_hidden`, `min_refresh_minutes`, `more` (the feed has another page) |
 | `sensor.youtube_account_watch_later` | Number of Watch Later videos; `items` attribute in list order (id, title, channel, duration, `percent` watched, `details`, thumbnail, url). Read with the feed |
 | `binary_sensor.youtube_account_signed_in` | Turns off when YouTube stops accepting the sign-in |
 | `button.youtube_account_refresh_home_feed` | Reads the feed and Watch Later again |
@@ -40,7 +40,8 @@ The feed and Watch Later are read when asked (the button, `youtube_account.refre
 | Action | Effect |
 |---|---|
 | `youtube_account.play` | Plays `media` (a video, Mix or playlist id or link: `RD...`, `PL...`, `WL`, `LL`, `youtube.com/playlist?list=...`) on `entity_id`, a YouTube on TV player, with `enqueue` `play` (default), `next`, `add` or `replace`. A Mix sends its first 25 videos and a playlist its first 50, read signed in so a Mix is your own and Watch Later opens. A link to a video inside a list (`watch?v=...&list=...`) plays the video |
-| `youtube_account.refresh_feed` | Reads the feed again; with `max_age` only if the last read is older (seconds; raised to the minimum time between reads) |
+| `youtube_account.refresh_feed` | Reads the feed again from its first page; with `max_age` only if the last read is older (seconds; raised to the minimum time between reads) |
+| `youtube_account.load_more` | Adds the feed's next page (about 30 items) to the end of the feed sensor, up to 300 items. Does nothing at the end of the feed |
 | `youtube_account.mark_watched` | Marks `video` (id or link) fully watched on the account and drops it from the feed |
 | `youtube_account.add_to_watch_later` | Saves `video` (id or link) to Watch Later; one already there stays |
 | `youtube_account.remove_from_watch_later` | Removes `videos` (ids or links) from Watch Later, or with `min_percent` every video in the last read list watched that far. Returns `removed`. This changes the account; it is not a hide |
@@ -76,9 +77,11 @@ players:            # default: every YouTube on TV player
 
 Other options: `player_options` (name and `open` per found player, keyed by entity), `exclude`, `ios_browser: brave` ("Here" links open in Brave on an iPhone or iPad), `max_age` (seconds; read the feed again on open when older), `clean_percent` (Watch Later "Clean up" removes videos watched this far), `session` (the last watched sensor; default: the one YouTube on TV has).
 
+Under Now playing, **Queue** lists what plays now and next on that player, read from its YouTube on TV queue list (`todo.<player>_queue`, found on the player's device; a `queue` entry in `players` or `player_options` names another), each with Remove. Home leaves out videos in Watch Later and in that queue; a video (or Mix, or playlist) sent with Queue, Next or Save leaves home at once and comes back if the call fails. **More videos** at the end of home calls `youtube_account.load_more`.
+
 Every action goes to the player in **Now playing**: the one playing (the latest to start), else the one last picked there. With more than one player, Now playing has a switch between them and **Move to** for each other player. Its clock runs on its own and moves only when a report differs by 1.5 s or more; the rate is the player's speed, measured from two reports when the TV plays faster than it tells the remote protocol (TizenTube at 2x reports speed 1). With a mouse, a video's actions show on hover, each icon with its name. The gear (admins only) edits the minimum time between feed reads in the card: it saves the account's Configure option; **All settings** opens the integration page.
 
-Play, Next and Queue call `youtube_account.play`; Watched, Save and Remove call the account actions; Resume and Move to call `youtube_on_tv.resume` and `youtube_on_tv.transfer`.
+Play, Next and Queue call `youtube_account.play`; Watched, Save and Remove call the account actions; Remove in Queue calls `todo.remove_item`; Resume and Move to call `youtube_on_tv.resume` and `youtube_on_tv.transfer`.
 
 ## Where the parsing comes from
 
@@ -86,7 +89,7 @@ YouTube changes its pages without notice. When a read breaks, start from the sou
 
 | Part | Reads | Source to compare with |
 |---|---|---|
-| Home feed (`youtube.fetch_feed`) | `https://www.youtube.com/` page, `var ytInitialData`: `lockupViewModel` tiles (`contentType` VIDEO or PLAYLIST, Mix ids start `RD`), `shortsLockupViewModel` (counted, left out), `adSlotRenderer` (left out). Views and age from `metadata.lockupMetadataViewModel...metadataRows[].metadataParts[]` after the channel; duration and LIVE from `thumbnailBottomOverlayViewModel.badges`; watched bar from `progressBar.thumbnailOverlayProgressBarViewModel.startPercent`. More tiles: `continuationItemRenderer` token to `youtubei/v1/browse` | yt-dlp's `:ytrec` feed (`yt_dlp/extractor/youtube/_tab.py`, `YoutubeTabBaseInfoExtractor._rich_entries` and `_extract_lockup_view_model`), which this replaced because its entries drop views, age and progress. Tile shapes shared with the TV app: youtube-hub `FINDINGS.md` F3, F4 |
+| Home feed (`youtube.fetch_feed`) | `https://www.youtube.com/` page, `var ytInitialData`: `lockupViewModel` tiles (`contentType` VIDEO or PLAYLIST, Mix ids start `RD`), `shortsLockupViewModel` (counted, left out), `adSlotRenderer` (left out). Views and age from `metadata.lockupMetadataViewModel...metadataRows[].metadataParts[]` after the channel; duration and LIVE from `thumbnailBottomOverlayViewModel.badges`; watched bar from `progressBar.thumbnailOverlayProgressBarViewModel.startPercent`. More tiles: `continuationItemRenderer` token to `youtubei/v1/browse`; the last token is kept for `load_more`, which reads the home page again for its ytcfg and posts that token (`scripts/live_probe.sh more`) | yt-dlp's `:ytrec` feed (`yt_dlp/extractor/youtube/_tab.py`, `YoutubeTabBaseInfoExtractor._rich_entries` and `_extract_lockup_view_model`), which this replaced because its entries drop views, age and progress. Tile shapes shared with the TV app: youtube-hub `FINDINGS.md` F3, F4 |
 | Watch Later (`youtube.fetch_watch_later`) | `https://www.youtube.com/playlist?list=WL` page, `playlistVideoRenderer`, page shape in youtube-hub `FINDINGS.md` F6; this code also reads `lengthSeconds` and the `videoInfo` runs | yt-dlp's playlist parsing (`_tab.py`, `YoutubeTabBaseInfoExtractor._playlist_entries`); measured signed in, 2026-10-02: F6 |
 | Save to and remove from Watch Later | `youtubei/v1/browse/edit_playlist`, the web form in youtube-hub `FINDINGS.md` F5 | what youtube.com sends from a playlist's "Remove from Watch Later" (DevTools, Network); the TV form: F5 |
 | Signed requests (`youtube._Web`) | `ytcfg.set({...})` blocks for `INNERTUBE_CONTEXT`, `INNERTUBE_CLIENT_VERSION`, `VISITOR_DATA`, `SESSION_INDEX`, `DELEGATED_SESSION_ID`, `LOGGED_IN`; `Authorization: SAPISIDHASH <ts>_<sha1(ts SAPISID origin)>` plus the 1P and 3P forms | yt-dlp `yt_dlp/extractor/youtube/_base.py` (`_make_sid_authorization`, `_get_sid_authorization_header`, `generate_api_headers`, `extract_ytcfg`) |
@@ -115,7 +118,7 @@ VIRTUAL_ENV=.venv uv pip install -r requirements_test.txt
 cd scripts/card-smoke && pnpm install && pnpm test
 ```
 
-`scripts/live_probe.sh feed|watch_later` runs this checkout's `youtube.py` on a Home Assistant box (over `ssh home-assistant`) against the stored account cookies, read only, and prints a summary with no cookies. Use it before and after a parser change.
+`scripts/live_probe.sh feed|more|watch_later` runs this checkout's `youtube.py` on a Home Assistant box (over `ssh home-assistant`) against the stored account cookies, read only, and prints a summary with no cookies. Use it before and after a parser change.
 
 ## License
 

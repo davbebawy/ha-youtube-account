@@ -137,6 +137,10 @@
         }
       }
     },
+    "load_more": {
+      "name": "Load more of the home feed",
+      "description": "Adds the next page of the YouTube home feed (about 30 items) to the feed sensor, up to 300 items. A refresh starts the feed from its first page again."
+    },
     "mark_watched": {
       "name": "Mark watched",
       "description": "Marks a video fully watched on the YouTube account, so YouTube stops recommending it, and drops it from the home feed.",

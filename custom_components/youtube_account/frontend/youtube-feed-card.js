@@ -2,8 +2,11 @@
  * YouTube feed card, shipped with the YouTube Account integration.
  *
  * Shows the signed-in home feed and Watch Later, "Continue watching", and
- * Now playing for one player at a time. Each video shows its views, age and
- * watched bar as youtube.com does. Tapping a thumbnail shows its actions as
+ * Now playing for one player at a time, with that player's queue (its
+ * YouTube on TV to-do list). Each video shows its views, age and
+ * watched bar as youtube.com does. Home leaves out videos in Watch Later
+ * or in the queue; one queued or saved here leaves at once. "More videos"
+ * calls youtube_account.load_more. Tapping a thumbnail shows its actions as
  * icons on top of it; with a mouse, hovering does. Every action goes to the
  * player in Now playing: the one playing, else the last one picked there.
  * Account buttons call youtube_account.refresh_feed, .mark_watched,
@@ -27,6 +30,7 @@
  *   max_age: 900                 # read the feed again on open when older (s)
  *   clean_percent: 90            # Watch Later "Clean up" removes videos watched this far
  *   session: sensor.x            # last watched sensor; default: YouTube on TV's
+ *   (per player) queue: todo.x   # queue list; default: the player's device's
  */
 
 const DEFAULT_FEED = "sensor.youtube_account_home_feed";
@@ -103,6 +107,8 @@ class YouTubeFeedCard extends HTMLElement {
     this._target = this._load("target");
     this._choice = null; // the player picked in Now playing on this visit
     this._np = {}; // Now playing clock per player: see _anchor
+    this._queue = null; // { id, items } of the target player's queue list
+    this._gone = new Set(); // queued or saved on this visit: off home at once
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
   }
 
@@ -122,6 +128,7 @@ class YouTubeFeedCard extends HTMLElement {
       this._renderLive();
     }
     if (first) this._maybeRefresh();
+    this._syncQueue();
   }
 
   connectedCallback() {
@@ -134,11 +141,13 @@ class YouTubeFeedCard extends HTMLElement {
     // A pop-up re-attaches the card each time it opens: read the feed again if it's old.
     this._refreshed = false;
     this._maybeRefresh();
+    this._syncQueue();
   }
 
   disconnectedCallback() {
     this._observer?.disconnect();
     clearInterval(this._tick);
+    this._unsubQueue();
   }
 
   getCardSize() {
@@ -201,6 +210,56 @@ class YouTubeFeedCard extends HTMLElement {
         (entities[id].translation_key === "last_session" || id.endsWith("_last_watched")),
     );
     return found || DEFAULT_SESSION;
+  }
+
+  // The queue of a player: YouTube on TV's to-do list on the same device.
+  _queueId(player) {
+    if (!player) return null;
+    if (player.queue) return player.queue;
+    const entities = this._hass?.entities || {};
+    const device = entities[player.entity]?.device_id;
+    const found = device && Object.keys(entities).find(
+      (id) => id.startsWith("todo.") && entities[id].platform === "youtube_on_tv" && entities[id].device_id === device,
+    );
+    return found || `todo.${player.entity.split(".")[1]}_queue`;
+  }
+
+  // Follow the target player's queue list; its items come by subscription,
+  // since a reorder leaves the list's state (a count) as it was.
+  _syncQueue() {
+    const id = this.isConnected ? this._queueId(this._targetPlayer()) : null;
+    if (id === this._queueSub?.id) return;
+    this._unsubQueue();
+    const conn = this._hass?.connection;
+    if (!id || !this._state(id) || !conn?.subscribeMessage) return;
+    const sub = { id };
+    this._queueSub = sub;
+    sub.unsub = conn
+      .subscribeMessage((msg) => {
+        if (this._queueSub !== sub) return;
+        this._setQueue({ id, items: msg.items || [] });
+      }, { type: "todo/item/subscribe", entity_id: id })
+      .catch(() => null);
+  }
+
+  _unsubQueue() {
+    const sub = this._queueSub;
+    this._queueSub = null;
+    sub?.unsub?.then((off) => off?.()).catch(() => {});
+    if (this._queue) this._setQueue(null);
+  }
+
+  // A new queue redraws its own part, and home only when the videos in it change.
+  _setQueue(queue) {
+    const before = this._queueVideos().join(",");
+    this._queue = queue;
+    if (this._queueVideos().join(",") !== before) this._render();
+    else this._renderLive();
+  }
+
+  // The video ids in the queue; a repeated video's uid is "<id>~2".
+  _queueVideos() {
+    return (this._queue?.items || []).map((i) => String(i.uid).split("~")[0]);
   }
 
   _playerName(p) {
@@ -267,8 +326,10 @@ class YouTubeFeedCard extends HTMLElement {
     try {
       await this._hass.callService(domain, service, data);
       if (done) this._showToast(done);
+      return true;
     } catch (err) {
       this._showToast(err.message || String(err));
+      return false;
     } finally {
       this._busy = null;
       this._applyBusy();
@@ -314,16 +375,30 @@ class YouTubeFeedCard extends HTMLElement {
   }
 
   // Through the account, which turns a Mix or playlist into its videos.
-  _playMedia(mediaId, enqueue, label) {
+  // Queued (add or next), the item leaves home at once: it is in the queue now.
+  _playMedia(mediaId, enqueue, label, leaves) {
     const target = this._targetPlayer();
     if (!target) return this._showToast("No YouTube on TV player found");
     this._picked = null;
-    this._call(
-      "youtube_account",
-      "play",
-      { entity_id: target.entity, media: mediaId, enqueue },
-      `${label} on ${this._playerName(target)}`,
-    );
+    const call = () =>
+      this._call(
+        "youtube_account",
+        "play",
+        { entity_id: target.entity, media: mediaId, enqueue },
+        `${label} on ${this._playerName(target)}`,
+      );
+    if (leaves) this._leaveHome(leaves, call);
+    else call();
+  }
+
+  // Take an item off home now; put it back when the call fails.
+  async _leaveHome(id, call) {
+    this._gone.add(id);
+    this._render();
+    if (!(await call())) {
+      this._gone.delete(id);
+      this._render();
+    }
   }
 
   _open(player) {
@@ -438,14 +513,20 @@ class YouTubeFeedCard extends HTMLElement {
       case "refresh":
         this._call("youtube_account", "refresh_feed", {}, "Feed updated");
         break;
+      case "more":
+        this._call("youtube_account", "load_more", {});
+        break;
+      case "unqueue":
+        this._call("todo", "remove_item", { entity_id: this._queue?.id, item: id }, "Removed from the queue");
+        break;
       case "play":
         this._playMedia(id, "play", "Playing");
         break;
       case "next":
-        this._playMedia(id, "next", "Playing next");
+        this._playMedia(id, "next", "Playing next", id);
         break;
       case "add":
-        this._playMedia(id, "add", "Added to the queue");
+        this._playMedia(id, "add", "Added to the queue", id);
         break;
       case "first":
         this._playMedia(item?.video_id, "next", "First video plays next");
@@ -462,7 +543,7 @@ class YouTubeFeedCard extends HTMLElement {
         break;
       case "save":
         this._pick(null);
-        this._call("youtube_account", "add_to_watch_later", { video: id }, "Saved to Watch Later");
+        this._leaveHome(id, () => this._call("youtube_account", "add_to_watch_later", { video: id }, "Saved to Watch Later"));
         break;
       case "resume":
         this._call("youtube_on_tv", "resume", { entity_id: player.entity }, `Resuming on ${this._playerName(player)}`);
@@ -509,6 +590,13 @@ class YouTubeFeedCard extends HTMLElement {
     return (this._state(this._watchLaterId())?.attributes?.items || []).some((i) => i.id === id);
   }
 
+  // Home leaves out what has a place of its own: Watch Later, the queue, and
+  // what was queued or saved on this visit.
+  _offHome() {
+    const later = (this._state(this._watchLaterId())?.attributes?.items || []).map((i) => i.id);
+    return new Set([...later, ...this._queueVideos(), ...this._gone]);
+  }
+
   _finished() {
     return this._items().filter((i) => i.later && i.percent >= this._config.clean_percent);
   }
@@ -532,11 +620,11 @@ class YouTubeFeedCard extends HTMLElement {
         <div class="main">
           ${this._header(feed)}
           <div class="settings-slot">${this._settingsPanel()}</div>
-          ${this._side ? "" : `<div class="live-continue">${this._continue()}</div><div class="live-np">${this._nowPlaying()}</div>`}
+          ${this._side ? "" : `<div class="live-continue">${this._continue()}</div><div class="live-np">${this._nowPlaying()}</div><div class="live-queue">${this._queuePanel()}</div>`}
           ${this._filters(feed)}
           <div class="feed ${this._grid ? "grid" : "list"}">${this._feedItems()}</div>
         </div>
-        ${this._side ? `<aside class="side"><div class="live-continue">${this._continue()}</div><div class="live-np">${this._nowPlaying()}</div></aside>` : ""}
+        ${this._side ? `<aside class="side"><div class="live-continue">${this._continue()}</div><div class="live-np">${this._nowPlaying()}</div><div class="live-queue">${this._queuePanel()}</div></aside>` : ""}
       </div>
       <div class="toast-slot">${this._toast ? `<div class="toast" role="status">${esc(this._toast)}</div>` : ""}</div>
     </ha-card>`;
@@ -608,6 +696,7 @@ class YouTubeFeedCard extends HTMLElement {
     const parts = [
       [".live-continue", () => this._continue()],
       [".live-np", () => this._nowPlaying()],
+      [".live-queue", () => this._queuePanel()],
     ];
     for (const [sel, html] of parts) {
       const el = root.querySelector(sel);
@@ -621,6 +710,7 @@ class YouTubeFeedCard extends HTMLElement {
     this._titles(root);
     this._applyBusy();
     this._tickNp();
+    this._syncQueue();
   }
 
   // The option as saved here wins until the sensor reports the same number.
@@ -660,7 +750,9 @@ class YouTubeFeedCard extends HTMLElement {
   _filters(feed) {
     const shorts = feed.attributes.shorts_hidden;
     const later = this._filter === "later";
-    return `<div class="chips">${FILTERS.map(([key, label]) => `<button class="chip ${this._filter === key ? "on" : ""}" data-act="filter" data-filter="${key}">${label}</button>`).join("")}
+    const count = this._state(this._watchLaterId())?.attributes?.items?.length;
+    const name = (key, label) => (key === "later" && count ? `${label} ${count}` : label);
+    return `<div class="chips">${FILTERS.map(([key, label]) => `<button class="chip ${this._filter === key ? "on" : ""}" data-act="filter" data-filter="${key}">${name(key, label)}</button>`).join("")}
       ${shorts && !later ? `<span class="muted">${shorts} Shorts hidden</span>` : ""}</div>
       ${later ? this._cleanBar() : ""}`;
   }
@@ -686,10 +778,16 @@ class YouTubeFeedCard extends HTMLElement {
 
   _feedItems() {
     const later = this._filter === "later";
-    const items = this._items().filter((i) => later || this._filter === "all" || i.kind === this._filter);
+    const off = later ? new Set() : this._offHome();
+    const items = this._items()
+      .filter((i) => later || this._filter === "all" || i.kind === this._filter)
+      .filter((i) => !off.has(i.id));
+    const more = !later && this._state(this._config.feed || DEFAULT_FEED)?.attributes?.more
+      ? `<button class="act more" data-act="more" data-busy ${this._busy ? "disabled" : ""}>More videos</button>`
+      : "";
     if (!items.length) {
       const unread = later && this._state(this._watchLaterId())?.state === "unknown";
-      return `<div class="empty">${unread ? "Watch Later is not read yet. Try Refresh." : "Nothing here. Try Refresh."}</div>`;
+      return `<div class="empty">${unread ? "Watch Later is not read yet. Try Refresh." : "Nothing here. Try Refresh."}</div>${more}`;
     }
     return items.map((i) => {
       const list = i.kind !== "video";
@@ -709,7 +807,7 @@ class YouTubeFeedCard extends HTMLElement {
         </div>
         ${picked ? this._overlay(i) : ""}
       </div>`;
-    }).join("");
+    }).join("") + more;
   }
 
   // The actions of one feed item, as icons on top of its thumbnail (the
@@ -759,6 +857,25 @@ class YouTubeFeedCard extends HTMLElement {
       <div class="muted">${clock(a.position)}${a.duration ? ` of ${clock(a.duration)}` : ""}. Stopped on ${esc(a.device || "a TV")}, ${esc(ago(a.stopped_at))}.${left}</div>
       <div class="acts wrap">${buttons}${this._hereLink(a.url)}</div>
     </div>`;
+  }
+
+  // The target player's queue: what plays now and next, each with Remove.
+  // Played videos are left out. Empty or unread: nothing shows.
+  _queuePanel() {
+    const items = (this._queue?.items || []).filter((i) => i.status !== "completed");
+    if (!items.length) return "";
+    const up = items.filter((i) => !String(i.description || "").startsWith("Now playing")).length;
+    const rows = items.map((i) => {
+      const vid = String(i.uid).split("~")[0];
+      const now = String(i.description || "").startsWith("Now playing");
+      const channel = String(i.description || "").replace(/^Now playing( - )?/, "");
+      return `<div class="q-row ${now ? "now" : ""}">
+        <img src="https://i.ytimg.com/vi/${encodeURIComponent(vid)}/mqdefault.jpg" alt="" loading="lazy">
+        <div class="q-meta"><div class="q-name">${esc(i.summary || vid)}</div><div class="muted">${now ? "Now playing" : esc(channel)}</div></div>
+        ${now ? "" : `<button class="q-btn" data-act="unqueue" data-id="${esc(i.uid)}" aria-label="Remove from the queue" data-tip="Remove from the queue" data-busy ${this._busy ? "disabled" : ""}>${ICON.remove}</button>`}
+      </div>`;
+    }).join("");
+    return `<div class="block"><div class="cap">Queue on ${esc(this._playerName(this._targetPlayer()))} &middot; ${up} up next</div><div class="queue">${rows}</div></div>`;
   }
 
   _bar(pct) {
@@ -921,6 +1038,14 @@ class YouTubeFeedCard extends HTMLElement {
       .np-fill { transition: width 1s linear; }
       .bar span:last-child { flex: 1; background: var(--divider-color, #3a3a3a); border-radius: 2px; }
       .empty { padding: 16px; color: var(--yt-muted); font-size: 14px; }
+      .act.more { grid-column: 1 / -1; flex: none; width: 100%; background: var(--yt-surface); }
+      .queue { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
+      .q-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px; border-radius: 10px; background: var(--yt-surface); }
+      .q-row.now { outline: 1px solid var(--yt-accent); }
+      .q-row img { width: 72px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #2b3a4a; }
+      .q-meta { min-width: 0; }
+      .q-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .q-btn { width: 36px; height: 36px; border: 0; border-radius: 18px; background: transparent; color: var(--yt-muted); display: flex; align-items: center; justify-content: center; cursor: pointer; }
       .toast { position: fixed; z-index: 12; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px); background: var(--primary-text-color); color: var(--card-background-color, #000); padding: 10px 14px; border-radius: 10px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
       .narrow .layout { display: block; }
     </style>`;

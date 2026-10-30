@@ -40,6 +40,25 @@ if WHAT == "feed":  # noqa: F821
             i.percent,
             i.live,
         )
+elif WHAT == "more":  # noqa: F821
+    # Two pages through the saved token, as "More videos" reads them.
+    first, _, _, token = mod.fetch_feed_page(cookies, 30)
+    print("page 1", len(first), "next token", bool(token))
+    if token:
+        more, _, shorts, token = mod.fetch_feed_page(cookies, 30, token)
+        ids = {i.id for i in first}
+        print(
+            "page 2",
+            len(more),
+            "new",
+            sum(i.id not in ids for i in more),
+            "shorts",
+            shorts,
+            "next token",
+            bool(token),
+        )
+        for i in more[:5]:
+            print(i.kind, i.id, (i.title or "")[:40], "|", i.details)
 else:
     items, _ = mod.fetch_watch_later(cookies)
     print(

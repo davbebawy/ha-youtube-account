@@ -53,9 +53,9 @@ def mock_watch_later() -> Generator[MagicMock]:
 
 @pytest.fixture
 def mock_fetch() -> Generator[MagicMock]:
-    """Patch reading the feed; returns two items and refreshed cookies."""
+    """Patch reading the feed; returns two items, refreshed cookies, no next page."""
     with patch.object(
-        youtube, "fetch_feed", return_value=(list(FEED), REFRESHED, 1)
+        youtube, "fetch_feed_page", return_value=(list(FEED), REFRESHED, 1, None)
     ) as mock:
         yield mock
 

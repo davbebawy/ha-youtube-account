@@ -34,6 +34,7 @@ from .coordinator import YouTubeAccountCoordinator, async_expand_list, async_get
 
 SERVICE_PLAY = "play"
 SERVICE_REFRESH_FEED = "refresh_feed"
+SERVICE_LOAD_MORE = "load_more"
 SERVICE_MARK_WATCHED = "mark_watched"
 SERVICE_REMOVE_FROM_WATCH_LATER = "remove_from_watch_later"
 SERVICE_ADD_TO_WATCH_LATER = "add_to_watch_later"
@@ -93,6 +94,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
             timedelta(seconds=max_age) if max_age is not None else None
         )
 
+    async def load_more(call: ServiceCall) -> None:
+        await _account(hass).async_load_more()
+
     async def mark_watched(call: ServiceCall) -> None:
         account = _account(hass)
         await account.async_mark_watched(_video_id(call.data[ATTR_VIDEO]))
@@ -115,6 +119,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_REFRESH_FEED, refresh_feed, REFRESH_SCHEMA
     )
+    hass.services.async_register(DOMAIN, SERVICE_LOAD_MORE, load_more)
     hass.services.async_register(
         DOMAIN, SERVICE_MARK_WATCHED, mark_watched, VIDEO_SCHEMA
     )

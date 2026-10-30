@@ -266,6 +266,33 @@ def test_fetch_feed_reads_more_pages_up_to_limit(web) -> None:
     assert web.posts == [("browse", {"continuation": "t1"})]
 
 
+def test_fetch_feed_page_keeps_the_next_token(web) -> None:
+    web.pages[youtube.HOME_URL] = _page({"contents": [VIDEO_TILE, _more("t1")]})
+    items, _, _, more = youtube.fetch_feed_page(parse_cookies(HEADER), 1)
+    assert [i.id for i in items] == ["OmmaHKzxtVw"]
+    assert more == "t1"
+    assert web.posts == []
+
+
+def test_fetch_feed_page_from_token(web) -> None:
+    # The home page is read for its ytcfg only; its tiles are not taken again.
+    web.pages[youtube.HOME_URL] = _page({"contents": [VIDEO_TILE, _more("t0")]})
+    web.answers.append({"items": [LIVE_TILE, MIX_TILE, SHORT_TILE, _more("t10")]})
+    items, _, shorts, more = youtube.fetch_feed_page(parse_cookies(HEADER), 1, "t9")
+    # The whole page is kept, not cut at the limit, so the next token follows on.
+    assert [i.id for i in items] == ["liveliveliv", "RDqyUPz6_TciY"]
+    assert shorts == 1
+    assert more == "t10"
+    assert web.posts == [("browse", {"continuation": "t9"})]
+
+
+def test_fetch_feed_page_at_the_end(web) -> None:
+    web.pages[youtube.HOME_URL] = _page({"contents": []})
+    web.answers.append({"items": [LIVE_TILE]})
+    _, _, _, more = youtube.fetch_feed_page(parse_cookies(HEADER), 30, "t9")
+    assert more is None
+
+
 def test_fetch_feed_empty_but_signed_in(web) -> None:
     web.pages[youtube.HOME_URL] = _page({"contents": []})
     items, _, _ = youtube.fetch_feed(parse_cookies(HEADER), 30)
