@@ -244,6 +244,14 @@ tvState = "idle";
 c3.hass = ohass();
 await new Promise((res) => setTimeout(res, 3000));
 assert.deepEqual(oc.at(-1), ["youtube_account", "play", { entity_id: P, media: "v1", enqueue: "play" }]);
+// Idle (screensaver or background) also opens YouTube first.
+oc.length = 0;
+c3._pick("v1");
+click(c3.shadowRoot.querySelector('[data-act="play"]'));
+await settle();
+assert.deepEqual(oc[0], ["script", "apple_tv_launch_app", { source: "YouTube" }], "idle player not opened first");
+await new Promise((res) => setTimeout(res, 2500));
+assert.deepEqual(oc.at(-1), ["youtube_account", "play", { entity_id: P, media: "v1", enqueue: "play" }]);
 c3.remove();
 console.log("card smoke: ok");
 process.exit(0);

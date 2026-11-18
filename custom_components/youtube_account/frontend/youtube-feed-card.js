@@ -444,9 +444,15 @@ class YouTubeFeedCard extends HTMLElement {
   // button does and wait until the player answers, then play. A play sent
   // while it is closed opens the Apple TV app with the video in a quarter of
   // the screen and drops the rest of the list (2026-11-18).
+  //
+  // Idle is not enough: behind the Apple TV screensaver or in the background
+  // the player still reads idle, and a play then lands in the quarter view
+  // too. So only a playing or paused player skips the open; opening YouTube
+  // when it is already in front just brings it forward.
   async _ready(target) {
     const closed = () => ["off", "unavailable"].includes(this._state(target.entity)?.state);
-    if (!target.open || !closed()) return true;
+    const live = ["playing", "paused"].includes(this._state(target.entity)?.state);
+    if (!target.open || live) return true;
     if (!(await this._open(target))) return false;
     const until = Date.now() + OPEN_WAIT_MS;
     while (closed() && Date.now() < until) await new Promise((res) => setTimeout(res, 500));
