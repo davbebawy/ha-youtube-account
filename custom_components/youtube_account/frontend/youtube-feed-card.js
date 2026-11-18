@@ -14,6 +14,8 @@
  * call youtube_account.play, which expands a Mix or playlist and calls
  * media_player.play_media on the YouTube on TV player. Resume and Move to
  * belong to the TV side: youtube_on_tv.resume and youtube_on_tv.transfer.
+ * Play on a Watch Later video plays it and queues the videos below it (up
+ * to 50 in all), sent to the player as one list.
  *
  *   type: custom:youtube-feed-card
  *   players:                     # optional fixed list; default: every YouTube on TV
@@ -37,6 +39,8 @@ const DEFAULT_FEED = "sensor.youtube_account_home_feed";
 // Used when no YouTube on TV last watched sensor is found.
 const DEFAULT_SESSION = "sensor.youtube_account_last_watched";
 const DEFAULT_WATCH_LATER = "sensor.youtube_account_watch_later";
+// Videos sent as one list: the account's own playlist limit (const.py).
+const LIST_LIMIT = 50;
 // Card widths: the feed turns into a grid, then gains a side column.
 // A landscape phone (about 750 px inside a pop-up) gets both.
 const GRID_MIN_WIDTH = 520;
@@ -391,6 +395,24 @@ class YouTubeFeedCard extends HTMLElement {
     else call();
   }
 
+  // A Watch Later video plays with the videos below it queued, in list order.
+  // The list goes straight to the player as one playlist (one setPlaylist).
+  _playLater(id) {
+    const later = (this._state(this._watchLaterId())?.attributes?.items || []).map((i) => i.id);
+    const from = later.indexOf(id);
+    const ids = from < 0 ? [id] : later.slice(from, from + LIST_LIMIT);
+    if (ids.length < 2) return this._playMedia(id, "play", "Playing");
+    const target = this._targetPlayer();
+    if (!target) return this._showToast("No YouTube on TV player found");
+    this._picked = null;
+    this._call(
+      "media_player",
+      "play_media",
+      { entity_id: target.entity, media_content_type: "playlist", media_content_id: ids.join(","), enqueue: "play" },
+      `Playing, ${ids.length - 1} more from Watch Later queued on ${this._playerName(target)}`,
+    );
+  }
+
   // Take an item off home now; put it back when the call fails.
   async _leaveHome(id, call) {
     this._gone.add(id);
@@ -520,7 +542,8 @@ class YouTubeFeedCard extends HTMLElement {
         this._call("todo", "remove_item", { entity_id: this._queue?.id, item: id }, "Removed from the queue");
         break;
       case "play":
-        this._playMedia(id, "play", "Playing");
+        if (item?.later) this._playLater(id);
+        else this._playMedia(id, "play", "Playing");
         break;
       case "next":
         this._playMedia(id, "next", "Playing next", id);

@@ -64,6 +64,16 @@ assert.match(r.querySelector(".clean").textContent, /Remove 2 videos watched 90%
 click(r.querySelector('[data-act="clean-yes"]'));
 await settle();
 assert.deepEqual(calls.at(-1), ["youtube_account", "remove_from_watch_later", { videos: ["a", "c"] }]);
+// Play on a Watch Later video queues the videos below it, as one list.
+card._pick("b");
+click(r.querySelector('[data-act="play"]'));
+await settle();
+assert.deepEqual(calls.at(-1), ["media_player", "play_media", { entity_id: P, media_content_type: "playlist", media_content_id: "b,c", enqueue: "play" }]);
+// The last video has nothing below it: a plain play.
+card._pick("c");
+click(r.querySelector('.thumb[data-id="c"]').closest(".item").querySelector('[data-act="play"]'));
+await settle();
+assert.deepEqual(calls.at(-1), ["youtube_account", "play", { entity_id: P, media: "c", enqueue: "play" }]);
 // Now playing: the player that plays is the target; a pick there wins for the visit.
 const Q = "media_player.youtube_on_den";
 const two = (aState, qState) => ({
