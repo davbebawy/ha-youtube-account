@@ -367,6 +367,55 @@ def add_to_watch_later(cookies: str, video_id: str) -> tuple[list[WatchLaterItem
     return items, refreshed
 
 
+def move_in_watch_later(
+    cookies: str, video_id: str, after_id: str | None
+) -> tuple[list[WatchLaterItem], str]:
+    """Move a Watch Later video after another one, or to the top (no after_id).
+
+    YouTube moves an entry only after another one, so the top is two moves:
+    the video after the first one, then the first one after the video.
+    Returns Watch Later as read after the change and the cookies as YouTube
+    left them. Raises YouTubeError when a video is not in the list.
+    """
+    with _cookie_file(cookies) as path:
+        with _Web(path) as web:
+            items, cfg = _read_watch_later(web)
+            set_ids = {item.id: item.set_id for item in items if item.set_id}
+            for vid in (video_id, after_id):
+                if vid is not None and vid not in set_ids:
+                    raise YouTubeError(f"{vid} is not in Watch Later")
+            moved = set_ids[video_id]
+            if after_id is not None:
+                actions = [_move_after(moved, set_ids[after_id])]
+            elif items[0].id != video_id:
+                first = set_ids[items[0].id]
+                actions = [_move_after(moved, first), _move_after(first, moved)]
+            else:
+                actions = []
+            if actions and after_id != video_id:
+                answer = web.post(
+                    cfg,
+                    "browse/edit_playlist",
+                    {"playlistId": "WL", "actions": actions},
+                )
+                if answer.get("status") != "STATUS_SUCCEEDED":
+                    raise YouTubeError(
+                        f"Watch Later move answered {answer.get('status')}"
+                    )
+                items, _ = _read_watch_later(web)
+        with open(path, encoding="utf-8") as file:
+            refreshed = file.read()
+    return items, refreshed
+
+
+def _move_after(set_id: str, predecessor: str) -> dict[str, str]:
+    return {
+        "action": "ACTION_MOVE_VIDEO_AFTER",
+        "setVideoId": set_id,
+        "movedSetVideoIdPredecessor": predecessor,
+    }
+
+
 def _read_watch_later(web: _Web) -> tuple[list[WatchLaterItem], dict[str, Any]]:
     html = web.get(WATCH_LATER_URL)
     cfg = _ytcfg(html)

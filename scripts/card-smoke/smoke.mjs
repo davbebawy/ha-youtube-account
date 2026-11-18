@@ -74,6 +74,15 @@ card._pick("c");
 click(r.querySelector('.thumb[data-id="c"]').closest(".item").querySelector('[data-act="play"]'));
 await settle();
 assert.deepEqual(calls.at(-1), ["youtube_account", "play", { entity_id: P, media: "c", enqueue: "play" }]);
+// Watch Later rows drag; a drop to the top sends no after, else the one before.
+assert.equal(r.querySelectorAll('.feed[data-drag-list="later"] > .item[data-drag-id] > .drag').length, 3, "Watch Later grips");
+await card._drop("later", "c", "a", true);
+assert.deepEqual(calls.at(-1), ["youtube_account", "move_in_watch_later", { video: "c" }]);
+await card._drop("later", "a", "c", false);
+assert.deepEqual(calls.at(-1), ["youtube_account", "move_in_watch_later", { video: "a", after: "c" }]);
+const before = calls.length;
+await card._drop("later", "b", "a", false);
+assert.equal(calls.length, before, "a drop in place sent a move");
 // Now playing: the player that plays is the target; a pick there wins for the visit.
 const Q = "media_player.youtube_on_den";
 const two = (aState, qState) => ({
@@ -143,7 +152,9 @@ const Qd = "todo.youtube_on_tv_queue";
 const subs = [];
 let fail = false;
 const qcalls = [];
+const ws = [];
 const qhass = (lu = "7") => ({
+  callWS: async (m) => { ws.push(m); },
   callService: async (...a) => { qcalls.push(a); if (fail) throw new Error("TV is off"); },
   connection: { subscribeMessage: async (cb, msg) => { subs.push({ cb, msg }); return () => { subs.find((x) => x.cb === cb).off = true; }; } },
   entities: { [P]: { platform: "youtube_on_tv", device_id: "d1" }, [Qd]: { platform: "youtube_on_tv", device_id: "d1" } },
@@ -196,8 +207,43 @@ await settle();
 assert.deepEqual(qcalls.at(-1), ["youtube_account", "load_more", {}]);
 c2.hass = { ...qhass("8"), states: { ...qhass("8").states, "sensor.youtube_account_home_feed": st("3", { updated_at: new Date().toISOString(), more: false, items: [] }, "8") } };
 assert.equal(r2.querySelector('[data-act="more"]'), null, "More shown at the end of the feed");
+// Queue rows drag (not the playing one); never before the playing video.
+subs[0].cb({ items: [
+  { uid: "v8", summary: "Eight", description: "Chan", status: "completed" },
+  { uid: "v9", summary: "Nine", description: "Now playing - Chan", status: "needs_action" },
+  { uid: "v2", summary: "Two", description: "Chan2", status: "needs_action" },
+  { uid: "v3", summary: "Three", description: "Chan3", status: "needs_action" } ] });
+assert.equal(r2.querySelectorAll('.queue[data-drag-list="queue"] > .q-row[data-drag-id] .drag').length, 2, "queue grips");
+await c2._drop("queue", "v3", "v2", true);
+assert.deepEqual(ws.at(-1), { type: "todo/item/move", entity_id: Qd, uid: "v3", previous_uid: "v9" });
+assert.deepEqual([...r2.querySelectorAll(".q-row")].map((e) => e.dataset.dragId), ["v9", "v3", "v2"], "new order not shown");
+await c2._drop("queue", "v2", "v9", true);
+assert.deepEqual(ws.at(-1), { type: "todo/item/move", entity_id: Qd, uid: "v2", previous_uid: "v9" });
 c2.remove();
 await settle();
 assert.ok(subs[0].off, "queue subscription left open");
+// YouTube closed on a player with an open action: open it, wait, then play.
+const oc = [];
+let tvState = "off";
+const ohass = () => ({
+  callService: async (...a) => { oc.push(a); },
+  entities: { [P]: { platform: "youtube_on_tv" } },
+  states: { ...base, [P]: st(tvState, { friendly_name: "YouTube on TV" }, tvState) },
+});
+const c3 = document.createElement("youtube-feed-card");
+Object.defineProperty(c3, "clientWidth", { get: () => 900 });
+c3.setConfig({ player_options: { [P]: { name: "Apple TV", open: { action: "script.apple_tv_launch_app", data: { source: "YouTube" } } } } });
+document.body.appendChild(c3);
+c3.hass = ohass();
+c3._pick("v1");
+click(c3.shadowRoot.querySelector('[data-act="play"]'));
+await settle();
+assert.deepEqual(oc.at(-1), ["script", "apple_tv_launch_app", { source: "YouTube" }], "YouTube not opened first");
+assert.equal(oc.filter((c) => c[1] === "play").length, 0, "played before YouTube opened");
+tvState = "idle";
+c3.hass = ohass();
+await new Promise((res) => setTimeout(res, 3000));
+assert.deepEqual(oc.at(-1), ["youtube_account", "play", { entity_id: P, media: "v1", enqueue: "play" }]);
+c3.remove();
 console.log("card smoke: ok");
 process.exit(0);

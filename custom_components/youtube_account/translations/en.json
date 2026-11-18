@@ -161,6 +161,20 @@
         }
       }
     },
+    "move_in_watch_later": {
+      "name": "Move in Watch Later",
+      "description": "Moves a video in Watch Later on the YouTube account to just after another video, or to the top.",
+      "fields": {
+        "video": {
+          "name": "Video",
+          "description": "The YouTube video id or link to move."
+        },
+        "after": {
+          "name": "After",
+          "description": "The video it goes after. Leave empty to move it to the top."
+        }
+      }
+    },
     "remove_from_watch_later": {
       "name": "Remove from Watch Later",
       "description": "Removes videos from Watch Later on the YouTube account: the videos named, or every video watched at least the given percent.",

@@ -15,7 +15,10 @@
  * media_player.play_media on the YouTube on TV player. Resume and Move to
  * belong to the TV side: youtube_on_tv.resume and youtube_on_tv.transfer.
  * Play on a Watch Later video plays it and queues the videos below it (up
- * to 50 in all), sent to the player as one list.
+ * to 50 in all), sent to the player as one list. With YouTube closed on a
+ * player that has an open action, every play opens YouTube first and waits
+ * for it. The queue and Watch Later reorder by dragging a row's grip:
+ * todo/item/move and youtube_account.move_in_watch_later.
  *
  *   type: custom:youtube-feed-card
  *   players:                     # optional fixed list; default: every YouTube on TV
@@ -41,6 +44,10 @@ const DEFAULT_SESSION = "sensor.youtube_account_last_watched";
 const DEFAULT_WATCH_LATER = "sensor.youtube_account_watch_later";
 // Videos sent as one list: the account's own playlist limit (const.py).
 const LIST_LIMIT = 50;
+// Opening YouTube on a closed player: how long to wait for it to answer, and
+// how long after that before a play (the app answers before it is ready).
+const OPEN_WAIT_MS = 30000;
+const OPEN_SETTLE_MS = 2000;
 // Card widths: the feed turns into a grid, then gains a side column.
 // A landscape phone (about 750 px inside a pop-up) gets both.
 const GRID_MIN_WIDTH = 520;
@@ -94,6 +101,7 @@ const ICON = {
   remove: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
   watched: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg>',
   settings: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h9M19 6h1M4 12h3M13 12h7M4 18h11M21 18h-1"/><circle cx="16" cy="6" r="2.5"/><circle cx="10" cy="12" r="2.5"/><circle cx="18" cy="18" r="2.5"/></svg>',
+  drag: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
 };
 
@@ -384,7 +392,8 @@ class YouTubeFeedCard extends HTMLElement {
     const target = this._targetPlayer();
     if (!target) return this._showToast("No YouTube on TV player found");
     this._picked = null;
-    const call = () =>
+    const call = async () =>
+      (await this._ready(target)) &&
       this._call(
         "youtube_account",
         "play",
@@ -397,7 +406,7 @@ class YouTubeFeedCard extends HTMLElement {
 
   // A Watch Later video plays with the videos below it queued, in list order.
   // The list goes straight to the player as one playlist (one setPlaylist).
-  _playLater(id) {
+  async _playLater(id) {
     const later = (this._state(this._watchLaterId())?.attributes?.items || []).map((i) => i.id);
     const from = later.indexOf(id);
     const ids = from < 0 ? [id] : later.slice(from, from + LIST_LIMIT);
@@ -405,6 +414,7 @@ class YouTubeFeedCard extends HTMLElement {
     const target = this._targetPlayer();
     if (!target) return this._showToast("No YouTube on TV player found");
     this._picked = null;
+    if (!(await this._ready(target))) return;
     this._call(
       "media_player",
       "play_media",
@@ -425,9 +435,103 @@ class YouTubeFeedCard extends HTMLElement {
 
   _open(player) {
     const open = player.open;
-    if (!open) return;
+    if (!open) return Promise.resolve(false);
     const [domain, service] = open.action.split(".");
-    this._call(domain, service, open.data || {}, `Opening YouTube on ${this._playerName(player)}`);
+    return this._call(domain, service, open.data || {}, `Opening YouTube on ${this._playerName(player)}`);
+  }
+
+  // YouTube closed on a player with an open action: open it the way its own
+  // button does and wait until the player answers, then play. A play sent
+  // while it is closed opens the Apple TV app with the video in a quarter of
+  // the screen and drops the rest of the list (2026-11-18).
+  async _ready(target) {
+    const closed = () => ["off", "unavailable"].includes(this._state(target.entity)?.state);
+    if (!target.open || !closed()) return true;
+    if (!(await this._open(target))) return false;
+    const until = Date.now() + OPEN_WAIT_MS;
+    while (closed() && Date.now() < until) await new Promise((res) => setTimeout(res, 500));
+    if (closed()) {
+      this._showToast(`YouTube did not open on ${this._playerName(target)}. Try again.`);
+      return false;
+    }
+    // The app answers before it is ready for a list.
+    await new Promise((res) => setTimeout(res, OPEN_SETTLE_MS));
+    return true;
+  }
+
+  // Drag a row's grip (queue or Watch Later) onto another row; drop moves it
+  // before or after that row. Pointer events, so touch works too.
+  _dragStart(ev) {
+    const handle = ev.target.closest?.("[data-drag]");
+    const row = handle?.closest("[data-drag-id]");
+    const list = row?.parentElement;
+    if (!row || !list?.dataset.dragList || this._busy) return;
+    ev.preventDefault();
+    const drag = { target: null, before: false };
+    row.classList.add("dragging");
+    const mark = (on) => drag.target?.classList.toggle(drag.before ? "drop-before" : "drop-after", on);
+    const move = (e) => {
+      mark(false);
+      const el = this.shadowRoot.elementFromPoint?.(e.clientX, e.clientY)?.closest?.("[data-drag-id]");
+      drag.target = el && el !== row && el.parentElement === list ? el : null;
+      if (!drag.target) return;
+      const r = drag.target.getBoundingClientRect();
+      drag.before = list.classList.contains("grid") ? e.clientX < r.left + r.width / 2 : e.clientY < r.top + r.height / 2;
+      mark(true);
+    };
+    const end = (e) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      row.classList.remove("dragging");
+      mark(false);
+      if (e.type === "pointerup" && drag.target) {
+        this._drop(list.dataset.dragList, row.dataset.dragId, drag.target.dataset.dragId, drag.before);
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  }
+
+  // The new order is shown at once; the list's own update confirms it.
+  async _drop(kind, id, targetId, before) {
+    if (kind === "queue") {
+      const items = this._queue?.items || [];
+      const order = items.map((i) => i.uid).filter((u) => u !== id);
+      // Never before the playing video: that part has played.
+      const now = items.findIndex((i) => String(i.description || "").startsWith("Now playing"));
+      let at = order.indexOf(targetId) + (before ? 0 : 1);
+      const nowAt = now < 0 ? -1 : order.indexOf(items[now].uid);
+      if (at <= nowAt) at = nowAt + 1;
+      order.splice(at, 0, id);
+      if (order.join() === items.map((i) => i.uid).join()) return;
+      const prev = order[at - 1];
+      const queueId = this._queue.id;
+      const byUid = new Map(items.map((i) => [i.uid, i]));
+      this._setQueue({ id: queueId, items: order.map((u) => byUid.get(u)) });
+      this._renderLive();
+      try {
+        await this._hass.callWS({ type: "todo/item/move", entity_id: queueId, uid: id, ...(prev ? { previous_uid: prev } : {}) });
+        this._showToast("Moved in the queue");
+      } catch (err) {
+        this._showToast(err.message || String(err));
+        this._setQueue({ id: queueId, items });
+        this._renderLive();
+      }
+      return;
+    }
+    const ids = (this._state(this._watchLaterId())?.attributes?.items || []).map((i) => i.id);
+    const order = ids.filter((v) => v !== id);
+    const at = order.indexOf(targetId) + (before ? 0 : 1);
+    order.splice(at, 0, id);
+    if (order.join() === ids.join()) return;
+    const prev = order[at - 1];
+    this._laterOrder = order;
+    this._render();
+    await this._call("youtube_account", "move_in_watch_later", prev ? { video: id, after: prev } : { video: id }, "Moved in Watch Later");
+    this._laterOrder = null;
+    this._render();
   }
 
   _showToast(text) {
@@ -604,7 +708,11 @@ class YouTubeFeedCard extends HTMLElement {
   // The items on show: the feed, or Watch Later (its videos have no kind).
   _items() {
     if (this._filter === "later") {
-      return (this._state(this._watchLaterId())?.attributes?.items || []).map((i) => ({ ...i, kind: "video", later: true }));
+      const items = (this._state(this._watchLaterId())?.attributes?.items || []).map((i) => ({ ...i, kind: "video", later: true }));
+      // A drag's new order shows until the account answers.
+      if (!this._laterOrder) return items;
+      const byId = new Map(items.map((i) => [i.id, i]));
+      return this._laterOrder.map((id) => byId.get(id)).filter(Boolean);
     }
     return this._state(this._config.feed || DEFAULT_FEED)?.attributes?.items || [];
   }
@@ -645,7 +753,7 @@ class YouTubeFeedCard extends HTMLElement {
           <div class="settings-slot">${this._settingsPanel()}</div>
           ${this._side ? "" : `<div class="live-continue">${this._continue()}</div><div class="live-np">${this._nowPlaying()}</div><div class="live-queue">${this._queuePanel()}</div>`}
           ${this._filters(feed)}
-          <div class="feed ${this._grid ? "grid" : "list"}">${this._feedItems()}</div>
+          <div class="feed ${this._grid ? "grid" : "list"}" ${this._filter === "later" ? 'data-drag-list="later"' : ""}>${this._feedItems()}</div>
         </div>
         ${this._side ? `<aside class="side"><div class="live-continue">${this._continue()}</div><div class="live-np">${this._nowPlaying()}</div><div class="live-queue">${this._queuePanel()}</div></aside>` : ""}
       </div>
@@ -654,6 +762,7 @@ class YouTubeFeedCard extends HTMLElement {
     this._titles(root);
     const card = root.querySelector("ha-card");
     card.addEventListener("click", (ev) => this._onClick(ev));
+    card.addEventListener("pointerdown", (ev) => this._dragStart(ev));
     card.addEventListener("input", (ev) => {
       if (this._settings && ev.target.matches?.(".settings input")) this._settings.value = ev.target.value;
     });
@@ -818,7 +927,7 @@ class YouTubeFeedCard extends HTMLElement {
       const sub = i.kind === "mix" ? "YouTube Mix" : [i.channel, i.details].filter(Boolean).map(esc).join(" &middot; ");
       const watched = i.percent > 0 ? `<div class="watched" aria-label="${i.percent}% watched"><span style="width:${Math.min(100, i.percent)}%"></span></div>` : "";
       const picked = this._picked === i.id;
-      return `<div class="item ${esc(i.kind)} ${picked ? "picked" : ""}">
+      return `<div class="item ${esc(i.kind)} ${picked ? "picked" : ""}" ${later ? `data-drag-id="${esc(i.id)}"` : ""}>
         <div class="thumb ${list ? "stack" : ""}" data-act="pick" data-id="${esc(i.id)}" role="button" tabindex="0" aria-expanded="${picked}" aria-label="Actions for ${esc(i.title || i.id)}">
           ${i.thumbnail ? `<img src="${esc(i.thumbnail)}" alt="" loading="lazy">` : ""}
           ${badge ? `<span class="badge ${esc(i.kind)} ${i.live ? "live" : ""}">${esc(badge)}</span>` : ""}
@@ -828,6 +937,7 @@ class YouTubeFeedCard extends HTMLElement {
           <div class="name" title="${esc(i.title)}">${esc(i.title || i.id)}</div>
           <div class="muted">${sub}</div>
         </div>
+        ${later ? `<button class="drag" data-drag aria-label="Drag to move" data-tip="Drag to move">${ICON.drag}</button>` : ""}
         ${picked ? this._overlay(i) : ""}
       </div>`;
     }).join("") + more;
@@ -892,13 +1002,14 @@ class YouTubeFeedCard extends HTMLElement {
       const vid = String(i.uid).split("~")[0];
       const now = String(i.description || "").startsWith("Now playing");
       const channel = String(i.description || "").replace(/^Now playing( - )?/, "");
-      return `<div class="q-row ${now ? "now" : ""}">
+      return `<div class="q-row ${now ? "now" : ""}" data-drag-id="${esc(i.uid)}">
         <img src="https://i.ytimg.com/vi/${encodeURIComponent(vid)}/mqdefault.jpg" alt="" loading="lazy">
         <div class="q-meta"><div class="q-name">${esc(i.summary || vid)}</div><div class="muted">${now ? "Now playing" : esc(channel)}</div></div>
+        ${now ? "" : `<button class="q-btn drag" data-drag aria-label="Drag to move" data-tip="Drag to move">${ICON.drag}</button>`}
         ${now ? "" : `<button class="q-btn" data-act="unqueue" data-id="${esc(i.uid)}" aria-label="Remove from the queue" data-tip="Remove from the queue" data-busy ${this._busy ? "disabled" : ""}>${ICON.remove}</button>`}
       </div>`;
     }).join("");
-    return `<div class="block"><div class="cap">Queue on ${esc(this._playerName(this._targetPlayer()))} &middot; ${up} up next</div><div class="queue">${rows}</div></div>`;
+    return `<div class="block"><div class="cap">Queue on ${esc(this._playerName(this._targetPlayer()))} &middot; ${up} up next</div><div class="queue" data-drag-list="queue">${rows}</div></div>`;
   }
 
   _bar(pct) {
@@ -1063,8 +1174,17 @@ class YouTubeFeedCard extends HTMLElement {
       .empty { padding: 16px; color: var(--yt-muted); font-size: 14px; }
       .act.more { grid-column: 1 / -1; flex: none; width: 100%; background: var(--yt-surface); }
       .queue { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
-      .q-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px; border-radius: 10px; background: var(--yt-surface); }
-      .q-row.now { outline: 1px solid var(--yt-accent); }
+      .q-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto auto; gap: 6px 10px; align-items: center; padding: 6px; border-radius: 10px; background: var(--yt-surface); }
+      .q-row.now { outline: 1px solid var(--yt-accent); grid-template-columns: 72px minmax(0, 1fr); }
+      .drag { touch-action: none; cursor: grab; }
+      .item > .drag { position: absolute; right: 4px; bottom: 4px; width: 36px; height: 36px; border: 0; border-radius: 18px; background: transparent; color: var(--yt-muted); display: flex; align-items: center; justify-content: center; }
+      .list .item > .drag { bottom: 50%; transform: translateY(50%); }
+      .item[data-drag-id] .meta { padding-right: 36px; }
+      .dragging { opacity: .45; }
+      .drop-before { box-shadow: 0 -3px 0 var(--yt-accent); }
+      .drop-after { box-shadow: 0 3px 0 var(--yt-accent); }
+      .grid .drop-before { box-shadow: -3px 0 0 var(--yt-accent); }
+      .grid .drop-after { box-shadow: 3px 0 0 var(--yt-accent); }
       .q-row img { width: 72px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #2b3a4a; }
       .q-meta { min-width: 0; }
       .q-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

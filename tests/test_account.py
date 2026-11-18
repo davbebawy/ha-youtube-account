@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,7 @@ from custom_components.youtube_account.const import (
     CONF_COOKIES,
     CONF_COOKIES_FILE,
     DOMAIN,
+    WATCH_LATER_SETTLE,
 )
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
 from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
@@ -26,7 +28,7 @@ from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .conftest import (
     COOKIES,
@@ -495,6 +497,91 @@ async def test_add_to_watch_later(
         await hass.services.async_call(
             DOMAIN, "add_to_watch_later", {"video": "nope"}, blocking=True
         )
+
+
+async def test_move_in_watch_later(
+    hass: HomeAssistant, init_account: MockConfigEntry
+) -> None:
+    moved = [WATCH_LATER[1], WATCH_LATER[0], WATCH_LATER[2]]
+    with patch.object(
+        youtube, "move_in_watch_later", return_value=(moved, REFRESHED)
+    ) as move:
+        await hass.services.async_call(
+            DOMAIN, "move_in_watch_later", {"video": B}, blocking=True
+        )
+        await hass.services.async_call(
+            DOMAIN,
+            "move_in_watch_later",
+            {"video": A, "after": f"https://youtu.be/{B}"},
+            blocking=True,
+        )
+    assert move.call_args_list[0].args == (REFRESHED, B, None)
+    assert move.call_args_list[1].args == (REFRESHED, A, B)
+    state = hass.states.get(WATCH_LATER_ID)
+    assert [i["id"] for i in state.attributes["items"]] == [B, A, C]
+    with (
+        patch.object(
+            youtube, "move_in_watch_later", side_effect=youtube.YouTubeError("x")
+        ),
+        pytest.raises(HomeAssistantError, match="Failed to change Watch Later"),
+    ):
+        await hass.services.async_call(
+            DOMAIN, "move_in_watch_later", {"video": A}, blocking=True
+        )
+
+
+async def test_watch_later_read_when_its_video_stops(
+    hass: HomeAssistant,
+    init_account: MockConfigEntry,
+    mock_watch_later: MagicMock,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    tv = (
+        er.async_get(hass)
+        .async_get_or_create("media_player", "youtube_on_tv", "screen1")
+        .entity_id
+    )
+    other = (
+        er.async_get(hass)
+        .async_get_or_create("media_player", "cast", "screen2")
+        .entity_id
+    )
+    reads = mock_watch_later.call_count
+
+    async def settle() -> None:
+        freezer.tick(timedelta(seconds=WATCH_LATER_SETTLE + 1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+
+    def play(entity_id: str, state: str, video: str | None) -> None:
+        hass.states.async_set(entity_id, state, {"media_content_id": video})
+
+    # A video not in Watch Later, and another integration's player: no read.
+    play(tv, "playing", "OmmaHKzxtVw")
+    play(tv, "idle", None)
+    play(other, "playing", B)
+    play(other, "idle", None)
+    await settle()
+    assert mock_watch_later.call_count == reads
+    # Pausing keeps the video: no read. Another video starts: one read.
+    play(tv, "playing", B)
+    play(tv, "paused", B)
+    play(tv, "playing", B)
+    play(tv, "playing", C)
+    await settle()
+    assert mock_watch_later.call_count == reads + 1
+    # Stopped twice in a row: one read, after the last.
+    play(tv, "idle", None)
+    play(tv, "playing", A)
+    play(tv, "off", None)
+    await settle()
+    assert mock_watch_later.call_count == reads + 2
+    # Unloaded: no more reads.
+    await hass.config_entries.async_unload(init_account.entry_id)
+    play(tv, "playing", B)
+    play(tv, "idle", None)
+    await settle()
+    assert mock_watch_later.call_count == reads + 2
 
 
 async def test_remove_from_watch_later_errors(

@@ -69,6 +69,7 @@ async def async_setup_entry(
     if not await account.async_load_cache():
         await account.async_config_entry_first_refresh()
     entry.runtime_data = account
+    entry.async_on_unload(account.async_follow_tvs())
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

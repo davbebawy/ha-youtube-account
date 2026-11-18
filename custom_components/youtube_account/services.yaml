@@ -43,6 +43,17 @@ add_to_watch_later:
       example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
       selector:
         text:
+move_in_watch_later:
+  fields:
+    video:
+      required: true
+      example: "dQw4w9WgXcQ"
+      selector:
+        text:
+    after:
+      example: "jNQXAC9IVRw"
+      selector:
+        text:
 remove_from_watch_later:
   fields:
     videos:

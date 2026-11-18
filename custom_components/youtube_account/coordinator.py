@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    callback,
+)
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -29,6 +38,8 @@ from .const import (
     FEED_LIMIT,
     FEED_MAX,
     LOGGER,
+    TV_PLATFORM,
+    WATCH_LATER_SETTLE,
 )
 from .youtube import FeedItem, WatchLaterItem
 
@@ -278,6 +289,110 @@ class YouTubeAccountCoordinator(DataUpdateCoordinator[FeedState]):
         self._store_cookies(refreshed)
         if self.data is not None:
             self.async_set_updated_data(replace(self.data, watch_later=tuple(items)))
+
+    @callback
+    def async_follow_tvs(self) -> CALLBACK_TYPE:
+        """Read Watch Later again when a Watch Later video stops on a TV.
+
+        The TV moves the video's watched bar on YouTube; the list keeps the old
+        one until read again. One read per video, a few seconds after it
+        stopped or another video started. Returns the function that stops it.
+        """
+        registry = er.async_get(self.hass)
+        timer: CALLBACK_TYPE | None = None
+
+        @callback
+        def is_tv(data: EventStateChangedData) -> bool:
+            entry = registry.async_get(data["entity_id"])
+            return (
+                entry is not None
+                and entry.platform == TV_PLATFORM
+                and entry.domain == "media_player"
+            )
+
+        @callback
+        def changed(event: Event[EventStateChangedData]) -> None:
+            nonlocal timer
+            old, new = event.data["old_state"], event.data["new_state"]
+            if old is None or old.state not in ("playing", "paused"):
+                return
+            video = old.attributes.get("media_content_id")
+            if not video or not self._in_watch_later(video):
+                return
+            if (
+                new is not None
+                and new.state in ("playing", "paused")
+                and new.attributes.get("media_content_id") == video
+            ):
+                return
+            if timer is not None:
+                timer()
+            timer = async_call_later(self.hass, WATCH_LATER_SETTLE, due)
+
+        async def due(_now: datetime) -> None:
+            nonlocal timer
+            timer = None
+            await self.async_refresh_watch_later()
+
+        unsub = self.hass.bus.async_listen(
+            EVENT_STATE_CHANGED, changed, event_filter=is_tv
+        )
+
+        @callback
+        def stop() -> None:
+            unsub()
+            if timer is not None:
+                timer()
+
+        return stop
+
+    def _in_watch_later(self, video_id: str) -> bool:
+        later = self.data.watch_later if self.data else None
+        return any(item.id == video_id for item in later or ())
+
+    async def async_move_in_watch_later(
+        self, video_id: str, after_id: str | None
+    ) -> None:
+        """Move a Watch Later video after another one, or to the top."""
+        items = await self._async_watch_later_call(
+            youtube.move_in_watch_later, video_id, after_id
+        )
+        if self.data is not None:
+            self.async_set_updated_data(replace(self.data, watch_later=tuple(items)))
+
+    async def async_refresh_watch_later(self) -> None:
+        """Read Watch Later again (its watched bars), not the home feed."""
+        try:
+            items = await self._async_watch_later_call(youtube.fetch_watch_later)
+        except HomeAssistantError as err:
+            LOGGER.warning("Error reading Watch Later: %s", err)
+            return
+        if self.data is not None:
+            self.async_set_updated_data(replace(self.data, watch_later=tuple(items)))
+
+    async def _async_watch_later_call(
+        self, func: Callable[..., tuple[Any, str]], *args: Any
+    ) -> Any:
+        """Run a Watch Later call with the account's cookies; keep the new ones."""
+        try:
+            result, refreshed = await self.hass.async_add_executor_job(
+                func, self.cookies, *args
+            )
+        except youtube.SignedOut as err:
+            self._set_signed_in(False)
+            self.config_entry.async_start_reauth(self.hass)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="signed_out"
+            ) from err
+        except youtube.YouTubeError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="watch_later_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        self._set_signed_in(True)
+        self._store_cookies(refreshed)
+        return result
 
     async def async_remove_from_watch_later(
         self, video_ids: list[str] | None, min_percent: int | None

@@ -8,7 +8,7 @@ It plays nothing by itself. Playback goes through [YouTube on TV](https://github
 
 - `sensor.youtube_account_home_feed`: your personal home feed (videos, Mixes and playlists), with views, age and the watched bar, as youtube.com shows them. Shorts and ads are left out.
 - `sensor.youtube_account_watch_later`: Watch Later with the watched percent of each video.
-- Actions: play a video, Mix or playlist on a TV; mark watched; save to and remove from Watch Later; refresh.
+- Actions: play a video, Mix or playlist on a TV; mark watched; save to, move in and remove from Watch Later; refresh.
 - A media source: the feed and Watch Later under **Media** in Home Assistant.
 - The feed card, `custom:youtube-feed-card`, loaded on every dashboard with no resource to add.
 
@@ -29,7 +29,7 @@ The **YouTube account** device has:
 | Entity | Description |
 |---|---|
 | `sensor.youtube_account_home_feed` | Number of feed items; `items` attribute with each video, Mix or playlist (id, title, channel, duration, thumbnail, url, `details`: views and age, such as 1.5M views and 1d ago, `percent` watched). `updated_at`, `shorts_hidden`, `min_refresh_minutes`, `more` (the feed has another page) |
-| `sensor.youtube_account_watch_later` | Number of Watch Later videos; `items` attribute in list order (id, title, channel, duration, `percent` watched, `details`, thumbnail, url). Read with the feed |
+| `sensor.youtube_account_watch_later` | Number of Watch Later videos; `items` attribute in list order (id, title, channel, duration, `percent` watched, `details`, thumbnail, url). Read with the feed, and again about 20 s after a Watch Later video stops or changes on a YouTube on TV player (its watched bar moved) |
 | `binary_sensor.youtube_account_signed_in` | Turns off when YouTube stops accepting the sign-in |
 | `button.youtube_account_refresh_home_feed` | Reads the feed and Watch Later again |
 
@@ -44,6 +44,7 @@ The feed and Watch Later are read when asked (the button, `youtube_account.refre
 | `youtube_account.load_more` | Adds the feed's next page (about 30 items) to the end of the feed sensor, up to 300 items. Does nothing at the end of the feed |
 | `youtube_account.mark_watched` | Marks `video` (id or link) fully watched on the account and drops it from the feed |
 | `youtube_account.add_to_watch_later` | Saves `video` (id or link) to Watch Later; one already there stays |
+| `youtube_account.move_in_watch_later` | Moves `video` (id or link) in Watch Later to just after `after`, or to the top without it. YouTube moves only after another entry, so the top is two moves in one request |
 | `youtube_account.remove_from_watch_later` | Removes `videos` (ids or links) from Watch Later, or with `min_percent` every video in the last read list watched that far. Returns `removed`. This changes the account; it is not a hide |
 
 `youtube_account.play` calls `media_player.play_media` on the player:
@@ -77,7 +78,7 @@ players:            # default: every YouTube on TV player
 
 Other options: `player_options` (name and `open` per found player, keyed by entity), `exclude`, `ios_browser: brave` ("Here" links open in Brave on an iPhone or iPad), `max_age` (seconds; read the feed again on open when older), `clean_percent` (Watch Later "Clean up" removes videos watched this far), `session` (the last watched sensor; default: the one YouTube on TV has).
 
-Under Now playing, **Queue** lists what plays now and next on that player, read from its YouTube on TV queue list (`todo.<player>_queue`, found on the player's device; a `queue` entry in `players` or `player_options` names another), each with Remove. Home leaves out videos in Watch Later and in that queue; a video (or Mix, or playlist) sent with Queue, Next or Save leaves home at once and comes back if the call fails. **More videos** at the end of home calls `youtube_account.load_more`.
+Under Now playing, **Queue** lists what plays now and next on that player, read from its YouTube on TV queue list (`todo.<player>_queue`, found on the player's device; a `queue` entry in `players` or `player_options` names another), each with Remove. Drag a row's grip to move it (`todo/item/move`; never before the playing video). In Watch Later, Play on a video plays it and queues the videos below it (up to 50) as one list, and a grip on each video drags it to a new place (`youtube_account.move_in_watch_later`). A player with an `open` action that reads off gets YouTube opened first; the play goes out once the player answers (up to 30 s), because a play sent to a closed Apple TV app shows the video in a quarter of the screen and drops the list. Home leaves out videos in Watch Later and in that queue; a video (or Mix, or playlist) sent with Queue, Next or Save leaves home at once and comes back if the call fails. **More videos** at the end of home calls `youtube_account.load_more`.
 
 Every action goes to the player in **Now playing**: the one playing (the latest to start), else the one last picked there. With more than one player, Now playing has a switch between them and **Move to** for each other player. Its clock runs on its own and moves only when a report differs by 1.5 s or more; the rate is the player's speed, measured from two reports when the TV plays faster than it tells the remote protocol (TizenTube at 2x reports speed 1). With a mouse, a video's actions show on hover, each icon with its name. The gear (admins only) edits the minimum time between feed reads in the card: it saves the account's Configure option; **All settings** opens the integration page.
 
@@ -91,6 +92,7 @@ YouTube changes its pages without notice. When a read breaks, start from the sou
 |---|---|---|
 | Home feed (`youtube.fetch_feed`) | `https://www.youtube.com/` page, `var ytInitialData`: `lockupViewModel` tiles (`contentType` VIDEO or PLAYLIST, Mix ids start `RD`), `shortsLockupViewModel` (counted, left out), `adSlotRenderer` (left out). Views and age from `metadata.lockupMetadataViewModel...metadataRows[].metadataParts[]` after the channel; duration and LIVE from `thumbnailBottomOverlayViewModel.badges`; watched bar from `progressBar.thumbnailOverlayProgressBarViewModel.startPercent`. More tiles: `continuationItemRenderer` token to `youtubei/v1/browse`; the last token is kept for `load_more`, which reads the home page again for its ytcfg and posts that token (`scripts/live_probe.sh more`) | yt-dlp's `:ytrec` feed (`yt_dlp/extractor/youtube/_tab.py`, `YoutubeTabBaseInfoExtractor._rich_entries` and `_extract_lockup_view_model`), which this replaced because its entries drop views, age and progress. Tile shapes shared with the TV app: youtube-hub `FINDINGS.md` F3, F4 |
 | Watch Later (`youtube.fetch_watch_later`) | `https://www.youtube.com/playlist?list=WL` page, `playlistVideoRenderer`, page shape in youtube-hub `FINDINGS.md` F6; this code also reads `lengthSeconds` and the `videoInfo` runs | yt-dlp's playlist parsing (`_tab.py`, `YoutubeTabBaseInfoExtractor._playlist_entries`); measured signed in, 2026-10-02: F6 |
+| Move in Watch Later | `browse/edit_playlist` `ACTION_MOVE_VIDEO_AFTER` (`setVideoId`, `movedSetVideoIdPredecessor`) | youtube-hub `FINDINGS.md` F26, probed on a custom list 2026-10-21; on WL not yet |
 | Save to and remove from Watch Later | `youtubei/v1/browse/edit_playlist`, the web form in youtube-hub `FINDINGS.md` F5 | what youtube.com sends from a playlist's "Remove from Watch Later" (DevTools, Network); the TV form: F5 |
 | Signed requests (`youtube._Web`) | `ytcfg.set({...})` blocks for `INNERTUBE_CONTEXT`, `INNERTUBE_CLIENT_VERSION`, `VISITOR_DATA`, `SESSION_INDEX`, `DELEGATED_SESSION_ID`, `LOGGED_IN`; `Authorization: SAPISIDHASH <ts>_<sha1(ts SAPISID origin)>` plus the 1P and 3P forms | yt-dlp `yt_dlp/extractor/youtube/_base.py` (`_make_sid_authorization`, `_get_sid_authorization_header`, `generate_api_headers`, `extract_ytcfg`) |
 | Mixes, playlists, mark watched | yt-dlp `extract_info` (flat) and `mark_watched` | yt-dlp; the version Home Assistant core pins for `media_extractor` (2026.07.04 on HA 2026.9) |

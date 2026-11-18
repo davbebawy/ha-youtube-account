@@ -38,6 +38,8 @@ SERVICE_LOAD_MORE = "load_more"
 SERVICE_MARK_WATCHED = "mark_watched"
 SERVICE_REMOVE_FROM_WATCH_LATER = "remove_from_watch_later"
 SERVICE_ADD_TO_WATCH_LATER = "add_to_watch_later"
+SERVICE_MOVE_IN_WATCH_LATER = "move_in_watch_later"
+ATTR_AFTER = "after"
 ATTR_MEDIA = "media"
 ATTR_VIDEO = "video"
 ATTR_MAX_AGE = "max_age"
@@ -56,6 +58,9 @@ PLAY_SCHEMA = vol.Schema(
 )
 REFRESH_SCHEMA = vol.Schema({vol.Optional(ATTR_MAX_AGE): cv.positive_int})
 VIDEO_SCHEMA = vol.Schema({vol.Required(ATTR_VIDEO): cv.string})
+MOVE_SCHEMA = vol.Schema(
+    {vol.Required(ATTR_VIDEO): cv.string, vol.Optional(ATTR_AFTER): cv.string}
+)
 REMOVE_FROM_WATCH_LATER_SCHEMA = vol.All(
     vol.Schema(
         {
@@ -105,6 +110,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
         account = _account(hass)
         await account.async_add_to_watch_later(_video_id(call.data[ATTR_VIDEO]))
 
+    async def move_in_watch_later(call: ServiceCall) -> None:
+        account = _account(hass)
+        after = call.data.get(ATTR_AFTER)
+        await account.async_move_in_watch_later(
+            _video_id(call.data[ATTR_VIDEO]), _video_id(after) if after else None
+        )
+
     async def remove_from_watch_later(call: ServiceCall) -> ServiceResponse:
         account = _account(hass)
         video_ids = None
@@ -125,6 +137,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_TO_WATCH_LATER, add_to_watch_later, VIDEO_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_MOVE_IN_WATCH_LATER, move_in_watch_later, MOVE_SCHEMA
     )
     hass.services.async_register(
         DOMAIN,

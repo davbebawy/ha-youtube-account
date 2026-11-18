@@ -29,3 +29,6 @@ FEED_MAX: Final = 300
 # Videos taken from a Mix (endless) or a playlist when it's played.
 MIX_LIMIT: Final = 25
 PLAYLIST_LIMIT: Final = 50
+# Seconds after a Watch Later video stops on a TV before Watch Later is read
+# again: YouTube takes a moment to store the new watched bar.
+WATCH_LATER_SETTLE: Final = 20

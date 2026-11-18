@@ -38,6 +38,9 @@
     "add_to_watch_later": {
       "service": "mdi:playlist-plus"
     },
+    "move_in_watch_later": {
+      "service": "mdi:drag-vertical"
+    },
     "remove_from_watch_later": {
       "service": "mdi:playlist-remove"
     }

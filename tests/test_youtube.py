@@ -412,6 +412,51 @@ def test_add_saved_video_sends_nothing(web) -> None:
     assert web.posts == []
 
 
+def _move(s, after):
+    return {
+        "action": "ACTION_MOVE_VIDEO_AFTER",
+        "setVideoId": "s" + s,
+        "movedSetVideoIdPredecessor": "s" + after,
+    }
+
+
+def test_move_in_watch_later(web) -> None:
+    web.pages[youtube.WATCH_LATER_URL] = _page(
+        {"contents": [_wl_video(A), _wl_video(B), _wl_video(C)]}
+    )
+    web.answers.append({"status": "STATUS_SUCCEEDED"})
+    youtube.move_in_watch_later(parse_cookies(HEADER), A, C)
+    assert web.posts == [
+        ("browse/edit_playlist", {"playlistId": "WL", "actions": [_move(A, C)]})
+    ]
+
+
+def test_move_to_top_of_watch_later(web) -> None:
+    # YouTube moves only after another entry: C after A, then A after C.
+    web.pages[youtube.WATCH_LATER_URL] = _page(
+        {"contents": [_wl_video(A), _wl_video(B), _wl_video(C)]}
+    )
+    web.answers.append({"status": "STATUS_SUCCEEDED"})
+    youtube.move_in_watch_later(parse_cookies(HEADER), C, None)
+    assert web.posts == [
+        (
+            "browse/edit_playlist",
+            {"playlistId": "WL", "actions": [_move(C, A), _move(A, C)]},
+        )
+    ]
+
+
+def test_move_in_watch_later_no_change_sends_nothing(web) -> None:
+    web.pages[youtube.WATCH_LATER_URL] = _page(
+        {"contents": [_wl_video(A), _wl_video(B)]}
+    )
+    youtube.move_in_watch_later(parse_cookies(HEADER), A, None)
+    youtube.move_in_watch_later(parse_cookies(HEADER), B, B)
+    assert web.posts == []
+    with pytest.raises(YouTubeError):
+        youtube.move_in_watch_later(parse_cookies(HEADER), C, None)
+
+
 def test_remove_from_watch_later_refused(web) -> None:
     web.pages[youtube.WATCH_LATER_URL] = _page({"contents": [_wl_video(A, 100)]})
     web.answers.append({"status": "STATUS_FAILED"})
